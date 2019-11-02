@@ -1,0 +1,141 @@
+"""
+    Augmenter that apply TF-IDF based to textual input.
+"""
+
+from dpattack.libs.nlpaug import WordAugmenter
+from dpattack.libs.nlpaug import Action, WarningException, WarningName, WarningCode, WarningMessage
+from dpattack.libs import nlpaug as nmws
+
+TFIDF_MODEL = {}
+
+
+def init_tfidf_model(model_path, force_reload=False):
+    # Load models once at runtime
+    global TFIDF_MODEL
+    if TFIDF_MODEL and not force_reload:
+        return TFIDF_MODEL
+
+    tfidf_model = nmws.TfIdf()
+    tfidf_model.read(model_path)
+    TFIDF_MODEL = tfidf_model
+
+    return tfidf_model
+
+
+class TfIdfAug(WordAugmenter):
+    """
+    Augmenter that leverage TF-IDF statistics to insert or substitute word.
+
+    :param str model_path: Downloaded models directory. Either model_path or models is must be provided
+    :param str action: Either 'insert or 'substitute'. If value is 'insert', a new word will be injected to random
+        position according to TF-IDF calculation. If value is 'substitute', word will be replaced according
+        to TF-IDF calculation
+    :param int top_k: Controlling lucky draw pool. Top k score token will be used for augmentation. Larger k, more
+        token can be used. Default value is 5. If value is None which means using all possible tokens.
+    :param int aug_min: Minimum number of word will be augmented.
+    :param float aug_p: Percentage of word will be augmented.
+    :param int aug_n : Deprecated. Use top_k as alternative. Top n similar word for lucky draw
+    :param list stopwords: List of words which will be skipped from augment operation.
+    :param func tokenizer: Customize tokenization process
+    :param func reverse_tokenizer: Customize reverse of tokenization process
+    :param str name: Name of this augmenter
+
+    >>> from dpattack.libs import nlpaug as naw
+    >>> aug = naw.TfIdfAug(model_path='.')
+    """
+
+    def __init__(self, model_path='.', action=Action.SUBSTITUTE,
+                 name='TfIdf_Aug', aug_min=1, aug_p=0.3, top_k=5, aug_n=None, stopwords=None,
+                 tokenizer=None, reverse_tokenizer=None, verbose=0):
+        super().__init__(
+            action=action, name=name, aug_p=aug_p, aug_min=aug_min, stopwords=stopwords,
+            tokenizer=tokenizer, reverse_tokenizer=reverse_tokenizer, verbose=verbose)
+        self.model_path = model_path
+        self.top_k = top_k
+        if aug_n is not None:
+            print(WarningMessage.DEPRECATED.format('aug_n', '0.11.0', 'top_k'))
+            self.top_k = aug_n
+        self.model = self.get_model(force_reload=False)
+
+    def skip_aug(self, token_idxes, tokens):
+        results = []
+        for token_idx in token_idxes:
+            # Some word does not come with IDF. It will be excluded in lucky draw.
+            word = tokens[token_idx]
+
+            if word in self.model.w2idf:
+                results.append(token_idx)
+
+        return results
+
+    def _get_aug_idxes(self, tokens):
+        aug_cnt = self.generate_aug_cnt(len(tokens))
+        word_idxes = self.pre_skip_aug(tokens)
+        word_idxes = self.skip_aug(word_idxes, tokens)
+
+        if len(word_idxes) == 0:
+            if self.verbose > 0:
+                exception = WarningException(name=WarningName.OUT_OF_VOCABULARY,
+                                             code=WarningCode.WARNING_CODE_002, msg=WarningMessage.NO_WORD)
+                exception.output()
+            return None
+        if len(word_idxes) < aug_cnt:
+            aug_cnt = len(word_idxes)
+
+        aug_probs = self.model.cal_tfidf(word_idxes, tokens)
+        aug_idxes = []
+
+        # It is possible that no token is picked. So re-try
+        retry_cnt = 3
+        possible_idxes = word_idxes.copy()
+        for _ in range(retry_cnt):
+            for i, p in zip(possible_idxes, aug_probs):
+                if self.prob() < p:
+                    aug_idxes.append(i)
+                    possible_idxes.remove(i)
+
+                    if len(possible_idxes) == aug_cnt:
+                        break
+
+        # If still cannot pick up, random pick index regrardless probability
+        if len(aug_idxes) < aug_cnt:
+            aug_idxes.extend(self.sample(possible_idxes, aug_cnt-len(aug_idxes)))
+
+        aug_idxes = self.sample(aug_idxes, aug_cnt)
+
+        return aug_idxes
+
+    def insert(self, data):
+        tokens = self.tokenizer(data)
+        results = tokens.copy()
+
+        aug_idxes = self._get_random_aug_idxes(tokens)
+        aug_idxes.sort(reverse=True)
+
+        for aug_idx in aug_idxes:
+            original_word = results[aug_idx]
+            candidate_words = self.model.predict(original_word, top_k=self.top_k)
+            new_word = self.sample(candidate_words, 1)[0]
+            results.insert(aug_idx, new_word)
+
+        return self.reverse_tokenizer(results)
+
+    def substitute(self, data):
+        tokens = self.tokenizer(data)
+        results = tokens.copy()
+
+        aug_idxes = self._get_aug_idxes(tokens)
+        if aug_idxes is None:
+            return data
+
+        for aug_idx in aug_idxes:
+            original_word = results[aug_idx]
+            candidate_words = self.model.predict(original_word, top_k=self.top_k)
+            substitute_word = self.sample(candidate_words, 1)[0]
+
+            results[aug_idx] = substitute_word
+
+        return self.reverse_tokenizer(results)
+
+    def get_model(self, force_reload=False):
+        return init_tfidf_model(self.model_path, force_reload)

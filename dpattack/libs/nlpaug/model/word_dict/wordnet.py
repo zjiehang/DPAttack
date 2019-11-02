@@ -1,0 +1,53 @@
+try:
+    import nltk
+    from nltk.corpus import wordnet
+except ImportError:
+    # No installation required if not using this function
+    pass
+
+from dpattack.libs.nlpaug import WordDictionary
+
+
+class WordNet(WordDictionary):
+    def __init__(self, lang, is_synonym=True):
+        super().__init__(cache=True)
+
+        self.lang = lang
+        self.is_synonym = is_synonym
+        self.model = self.read()
+
+        try:
+            wordnet
+        except NameError:
+            raise ImportError('Missed nltk library. Install it via `pip install nltk`')
+
+    @classmethod
+    def read(cls):
+        try:
+            # Check whether wordnet package is downloaded
+            wordnet.synsets('computer')
+        except ImportError:
+            nltk.download('wordnet')
+
+        try:
+            # Check whether POS package is downloaded
+            nltk.pos_tag('computer')
+        except ImportError:
+            nltk.download('averaged_perceptron_tagger')
+
+        return wordnet
+
+    def predict(self, word, pos=None):
+        results = []
+        for synonym in self.model.synsets(word, pos=pos, lang=self.lang):
+            for lemma in synonym.lemmas():
+                if self.is_synonym:
+                    results.append(lemma.name())
+                else:
+                    for antonym in lemma.antonyms():
+                        results.append(antonym.name())
+        return results
+
+    @classmethod
+    def pos_tag(cls, tokens):
+        return nltk.pos_tag(tokens)

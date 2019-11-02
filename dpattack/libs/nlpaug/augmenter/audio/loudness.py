@@ -1,0 +1,29 @@
+"""
+    Augmenter that apply adjusting loudness operation to audio.
+"""
+
+from dpattack.libs.nlpaug import AudioAugmenter
+from dpattack.libs.nlpaug import Action
+from dpattack.libs import nlpaug as nma
+
+
+class LoudnessAug(AudioAugmenter):
+    """
+    Augmenter that crop segment of audio by random values between crop_range variable.
+
+    :param tuple loudness_factor: Input data volume will be increased (decreased). Augmented value will be picked
+            within the range of this tuple value. Volume will be reduced if value is between 0 and 1.
+    :param str name: Name of this augmenter
+
+    >>> from dpattack.libs import nlpaug as naa
+    >>> aug = naa.LoudnessAug()
+    """
+
+    def __init__(self, loudness_factor=(0.5, 2), name='Loudness_Aug', verbose=0):
+        super().__init__(
+            action=Action.SUBSTITUTE, name=name, verbose=verbose)
+        self.model = self.get_model(loudness_factor)
+
+    @classmethod
+    def get_model(cls, loudness_factor):
+        return nma.Loudness(loudness_factor)

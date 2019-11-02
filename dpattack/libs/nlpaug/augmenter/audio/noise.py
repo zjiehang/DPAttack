@@ -1,0 +1,30 @@
+"""
+    Augmenter that apply noise injection operation to audio.
+"""
+
+from dpattack.libs.nlpaug import AudioAugmenter
+from dpattack.libs.nlpaug import Action
+from dpattack.libs import nlpaug as nma
+
+
+# TODO: Apply noise injection to segment of audio only
+
+class NoiseAug(AudioAugmenter):
+    """
+    Augmenter that crop segment of audio by random values between crop_range variable.
+
+    :param int noise_factor: Strength of noise
+    :param str name: Name of this augmenter
+
+    >>> from dpattack.libs import nlpaug as naa
+    >>> aug = naa.NoiseAug()
+    """
+
+    def __init__(self, noise_factor=0.01, name='Noise_Aug', verbose=0):
+        super().__init__(
+            action=Action.SUBSTITUTE, name=name, verbose=verbose)
+        self.model = self.get_model(noise_factor)
+
+    @classmethod
+    def get_model(cls, noise_factor):
+        return nma.Noise(noise_factor)
