@@ -1,4 +1,6 @@
-from __future__ import absolute_import
-from dpattack.libs.nlpaug import *
+from .base_augmenter import *
 
-__version__ = '0.0.9'
+from .augmenter import *
+from .flow import *
+from .model import *
+from .util import *

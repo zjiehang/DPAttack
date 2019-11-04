@@ -5,6 +5,7 @@ except ImportError:
     # No installation required if not using this function
     pass
 
+from dpattack.libs.nlpaug.util.selection.filtering import *
 
 class LanguageModels:
     def __init__(self, device=None, temperature=1.0, top_k=100, top_p=0.01, cache=True):

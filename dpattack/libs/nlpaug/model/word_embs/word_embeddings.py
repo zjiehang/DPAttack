@@ -1,6 +1,6 @@
 import numpy as np
 
-from dpattack.libs import nlpaug as normalization
+from dpattack.libs.nlpaug.util import math as normalization
 
 
 class WordEmbeddings:

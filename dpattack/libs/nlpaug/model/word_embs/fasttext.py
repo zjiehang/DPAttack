@@ -1,7 +1,7 @@
 # Source: https://arxiv.org/pdf/1712.09405.pdf
 
 import numpy as np
-from dpattack.libs.nlpaug import WordEmbeddings
+from dpattack.libs.nlpaug.model.word_embs import WordEmbeddings
 
 
 class Fasttext(WordEmbeddings):

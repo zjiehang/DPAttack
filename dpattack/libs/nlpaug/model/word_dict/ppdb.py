@@ -5,8 +5,8 @@ except ImportError:
     # No installation required if not using this function
     pass
 
-from dpattack.libs.nlpaug import PartOfSpeech
-from dpattack.libs.nlpaug import WordDictionary
+from dpattack.libs.nlpaug.util import PartOfSpeech
+from dpattack.libs.nlpaug.model.word_dict import WordDictionary
 
 
 class Ppdb(WordDictionary):

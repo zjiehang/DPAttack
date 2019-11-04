@@ -7,7 +7,7 @@ except ImportError:
     # No installation required if not using this function
     pass
 
-from dpattack.libs.nlpaug import LanguageModels
+from dpattack.libs.nlpaug.model.lang_models import LanguageModels
 
 
 class BertDeprecated(LanguageModels):

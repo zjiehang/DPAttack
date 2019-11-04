@@ -2,7 +2,7 @@
     Augmenter that apply cropping operation to audio.
 """
 
-from dpattack.libs.nlpaug import AudioAugmenter
+from dpattack.libs.nlpaug.augmenter.audio import AudioAugmenter
 from dpattack.libs.nlpaug import Action
 from dpattack.libs import nlpaug as nma
 

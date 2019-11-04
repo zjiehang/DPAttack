@@ -2,7 +2,7 @@
     Source data:
     English Neutral Rewriting: https://github.com/ybisk/charNMT-noise/blob/master/noise/en.natural
 """
-from dpattack.libs.nlpaug import WordDictionary
+from dpattack.libs.nlpaug.model.word_dict import WordDictionary
 
 
 class Spelling(WordDictionary):

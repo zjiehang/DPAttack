@@ -1,6 +1,6 @@
 import numpy as np
 
-from dpattack.libs.nlpaug import Method
+from dpattack.libs.nlpaug.util import Method
 from dpattack.libs.nlpaug import Augmenter
 
 

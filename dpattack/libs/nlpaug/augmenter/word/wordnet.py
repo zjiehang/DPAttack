@@ -2,7 +2,7 @@
     Augmenter that apply semantic meaning based to textual input.
 """
 
-from dpattack.libs.nlpaug import WordAugmenter
+from dpattack.libs.nlpaug.augmenter.word import WordAugmenter
 from dpattack.libs.nlpaug import Action, PartOfSpeech, WarningException, WarningName, WarningCode, WarningMessage
 from dpattack.libs import nlpaug as nmw
 from dpattack.libs.nlpaug import deprecated

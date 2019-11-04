@@ -2,7 +2,7 @@
 
 import numpy as np
 
-from dpattack.libs.nlpaug import WordEmbeddings
+from dpattack.libs.nlpaug.model.word_embs import WordEmbeddings
 
 pre_trained_model_url = {
     'glove_6b': 'http://nlp.stanford.edu/data/glove.6B.zip',

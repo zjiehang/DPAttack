@@ -7,8 +7,7 @@ except ImportError:
     # No installation required if not using this function
     pass
 
-from dpattack.libs.nlpaug import LanguageModels
-
+from dpattack.libs.nlpaug.model.lang_models import LanguageModels
 
 class XlNet(LanguageModels):
     # Since XLNet is not good on short inputs, Aman Rusia proposed to add padding text to overcome this limitation.

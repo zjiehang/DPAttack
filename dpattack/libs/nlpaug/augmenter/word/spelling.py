@@ -3,8 +3,8 @@
 """
 
 from dpattack.libs import nlpaug as nmwd
-from dpattack.libs.nlpaug import WordAugmenter
-from dpattack.libs.nlpaug import Action
+from dpattack.libs.nlpaug.augmenter.word import WordAugmenter
+from dpattack.libs.nlpaug.util import Action
 
 SPELLING_ERROR_MODEL = {}
 

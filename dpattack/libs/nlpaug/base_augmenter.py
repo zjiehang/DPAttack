@@ -1,7 +1,7 @@
 import random
 import numpy as np
 
-from dpattack.libs.nlpaug import Action, Method, WarningException, WarningName, WarningCode, WarningMessage
+from dpattack.libs.nlpaug.util import Action, Method, WarningException, WarningName, WarningCode, WarningMessage
 
 
 class Augmenter:

@@ -2,9 +2,9 @@
     Augmenter that apply operation to textual input based on word embeddings.
 """
 
-from dpattack.libs.nlpaug import WordAugmenter
-from dpattack.libs.nlpaug import Action
-from dpattack.libs import nlpaug as nmw
+from dpattack.libs.nlpaug.augmenter.word import WordAugmenter
+from dpattack.libs.nlpaug.util import Action
+from dpattack.libs.nlpaug.model import word_embs as nmw
 from dpattack.libs.nlpaug.util.exception import WarningMessage
 
 

@@ -2,8 +2,8 @@
     Augmenter that apply BERT's based operation to textual input.
 """
 
-from dpattack.libs.nlpaug import WordAugmenter
-from dpattack.libs.nlpaug import Action
+from dpattack.libs.nlpaug.augmenter.word import WordAugmenter
+from dpattack.libs.nlpaug.util import Action
 from dpattack.libs import nlpaug as nml
 from dpattack.libs.nlpaug import deprecated
 
