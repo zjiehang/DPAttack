@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
-from dpattack.libs.luna import fetch_best_ckpt_name
-from dpattack.models.modules import (MLP, Biaffine, BiLSTM, IndependentDropout,
-                                     SharedDropout)
+
+from dpattack.models.modules import (MLP, Biaffine, BiLSTM, IndependentDropout,EmbeddingDropout,CHAR_LSTM,
+                            SharedDropout)
 
 import torch
 import torch.nn as nn
-from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence
+from torch.nn.utils.rnn import pack_padded_sequence, pad_packed_sequence,pad_sequence
 
 
 class CharParser(nn.Module):
@@ -15,15 +15,14 @@ class CharParser(nn.Module):
 
         self.config = config
         # the embedding layer
-        self.pretrained = nn.Embedding.from_pretrained(embeddings, freeze=False)
-        # self.embed = nn.Embedding(num_embeddings=config.n_words,
-        #                           embedding_dim=config.n_embed)
-        self.tag_embed = nn.Embedding(num_embeddings=config.n_tags,
-                                      embedding_dim=config.n_tag_embed)
-        self.embed_dropout = IndependentDropout(p=config.embed_dropout)
+        self.embed = nn.Embedding.from_pretrained(embeddings, freeze=True) # no used
+        self.char_lstm = CHAR_LSTM(n_chars=config.n_chars,
+                                   n_embed=config.n_char_embed*2,
+                                   n_out=config.n_char_out*2)
+        self.embed_dropout = EmbeddingDropout(p=config.embed_dropout)
 
         # the word-lstm layer
-        self.lstm = BiLSTM(input_size=config.n_embed+config.n_tag_embed,
+        self.lstm = BiLSTM(input_size=config.n_char_out*2,
                            hidden_size=config.n_lstm_hidden,
                            num_layers=config.n_lstm_layers,
                            dropout=config.lstm_dropout)
@@ -60,7 +59,7 @@ class CharParser(nn.Module):
         pass
         # nn.init.zeros_(self.embed.weight)
 
-    def forward(self, words, tags):
+    def forward(self, words, chars):
         # get the mask and lengths of given batch
         mask = words.ne(self.pad_index)
         lens = mask.sum(dim=1)
@@ -71,11 +70,9 @@ class CharParser(nn.Module):
 
         # get outputs from embedding layers
         # embed = self.pretrained(words) + self.embed(ext_words)
-        embed = self.pretrained(words)
-        tag_embed = self.tag_embed(tags)
-        embed, tag_embed = self.embed_dropout(embed, tag_embed)
-        # concatenate the word and tag representations
-        x = torch.cat((embed, tag_embed), dim=-1)
+        char_embed = self.char_lstm(chars[mask])
+        char_embed = pad_sequence(torch.split(char_embed, lens.tolist()), True)
+        x = self.embed_dropout(char_embed)
 
         sorted_lens, indices = torch.sort(lens, descending=True)
         inverse_indices = indices.argsort()
@@ -99,7 +96,6 @@ class CharParser(nn.Module):
         s_arc.masked_fill_(~mask.unsqueeze(1), float('-inf'))
 
         return s_arc, s_rel
-
 
     @classmethod
     def load(cls, fname):
