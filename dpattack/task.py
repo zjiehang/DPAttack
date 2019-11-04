@@ -84,7 +84,7 @@ class ParserTask(Task):
     def predict(self, loader, tagger=None):
         self.model.eval()
 
-        all_arcs, all_rels = [], []
+        all_tags, all_arcs, all_rels = [], [], []
         for words, tags in loader:
             mask = words.ne(self.vocab.pad_index)
             # ignore the first token of each sentence
@@ -93,15 +93,17 @@ class ParserTask(Task):
             tags = self.get_tag(words, tags, mask, tagger)
 
             s_arc, s_rel = self.model(words, tags)
-            s_arc, s_rel = s_arc[mask], s_rel[mask]
+            tags, s_arc, s_rel = tags[mask], s_arc[mask], s_rel[mask]
             pred_arcs, pred_rels = self.decode(s_arc, s_rel)
 
+            all_tags.extend(torch.split(tags, lens))
             all_arcs.extend(torch.split(pred_arcs, lens))
             all_rels.extend(torch.split(pred_rels, lens))
+        all_tags = [self.vocab.id2tag(seq) for seq in all_tags]
         all_arcs = [seq.tolist() for seq in all_arcs]
         all_rels = [self.vocab.id2rel(seq) for seq in all_rels]
 
-        return all_arcs, all_rels
+        return all_tags, all_arcs, all_rels
 
     def get_loss(self, s_arc, s_rel, gold_arcs, gold_rels):
         s_rel = s_rel[torch.arange(len(s_rel)), gold_arcs]

@@ -31,12 +31,13 @@ class Predict(object):
 
         print("Load the dataset")
         corpus = Corpus.load(config.fdata)
-        dataset = TextDataset(vocab.numericalize(corpus, False))
+        dataset = TextDataset(vocab.numericalize(corpus, training=False))
         # set the data loader
         loader = batchify(dataset, config.batch_size)
 
         print("Make predictions on the dataset")
-        corpus.heads, corpus.rels = task.predict(loader, tagger)
+        corpus.tags, corpus.heads, corpus.rels = task.predict(loader, tagger)
 
-        print(f"Save the predicted result to {config.fpred}")
-        corpus.save(config.fpred)
+        saved_path = '{}/raw_result_{}_tag.conllx'.format(config.result_path,'pred' if config.pred_tag else 'gold')
+        print(f"Save the predicted result to {saved_path}")
+        corpus.save(saved_path)

@@ -9,9 +9,9 @@ __model_path__ = "saved/models"
 
 def cast_list(array, squeeze=True):
     if isinstance(array, torch.Tensor):
-        return cast_list(array.detach().cpu().numpy())
+        return cast_list(array.detach().cpu().numpy(),squeeze)
     if isinstance(array, list):
-        return cast_list(np.array(array))
+        return cast_list(np.array(array),squeeze)
     if isinstance(array, np.ndarray):
         if squeeze:
             return array.squeeze().tolist()

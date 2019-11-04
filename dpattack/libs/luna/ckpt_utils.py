@@ -31,7 +31,7 @@ def fetch_best_ckpt_name(model_path):
     if os.path.exists(model_name):
         print("Found checkpoint {}".format(model_name))
     else:
-        model_name = fetch_best_ckpt_name(model_path)
+        model_name = fetch_last_ckpt_name(model_path)
         print("Best checkpoint not found, use latest {} instead".format(model_name))
     return model_name
 

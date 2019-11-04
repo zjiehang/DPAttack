@@ -55,7 +55,7 @@ class Vocab(object):
                              for tag in sequence])
 
     def id2tag(self, ids):
-        ids = cast_list(ids)
+        ids = cast_list(ids, squeeze=False)
         return [self.tags[i] for i in ids]
 
     def rel2id(self, sequence):
@@ -63,7 +63,7 @@ class Vocab(object):
                              for rel in sequence])
 
     def id2rel(self, ids):
-        ids = cast_list(ids)
+        ids = cast_list(ids, squeeze=False)
         return [self.rels[i] for i in ids]
 
     def char2id(self, sequence, max_length=20):
