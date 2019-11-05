@@ -56,7 +56,7 @@ class PosTagger(nn.Module):
         s_tag = self.mlp_dropout(s_tag)
         return s_tag
 
-    def decorator_forward(self, words, root, return_value='cpu'):
+    def decorator_forward(self, words, root, return_device='cuda'):
         squeeze_needed = False
         if len(words.shape) == 1:
             squeeze_needed = True
@@ -68,7 +68,7 @@ class PosTagger(nn.Module):
         pred_tag = torch.cat([torch.zeros_like(pred_tag[:, :1]).fill_(root), pred_tag], dim=1)
         if squeeze_needed:
             pred_tag = pred_tag.squeeze()
-        if return_value == 'cpu':
+        if return_device == 'cpu':
             return pred_tag.cpu()
         else:
             return pred_tag

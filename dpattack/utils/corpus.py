@@ -9,6 +9,17 @@ Sentence = namedtuple(typename='Sentence',
                                    'PHEAD', 'PDEPREL'],
                       defaults=[None]*10)
 
+def init_sentence(seqs, tags, arcs, rels):
+    length = len(seqs)
+    ID = tuple(i for i in range(1,length+1))
+    FORM = tuple(seqs)
+    CPOS = tuple(tags)
+    POS = tuple(tags)
+    HEAD = tuple(arcs)
+    DEPREL = tuple(rels)
+    LEMMA, FEATS, PHEAD, PDEPREL = map(lambda x:tuple('_' for _ in range(x)),[length]*4)
+    return Sentence(ID, FORM, LEMMA, CPOS, POS, FEATS, HEAD, DEPREL, PHEAD, PHEAD)
+
 
 class Corpus(object):
     ROOT = '<ROOT>'
@@ -85,3 +96,6 @@ class Corpus(object):
     def save(self, fname):
         with open(fname, 'w') as f:
             f.write(f"{self}\n")
+
+    def append(self, sentence):
+        self.sentences.append(sentence)

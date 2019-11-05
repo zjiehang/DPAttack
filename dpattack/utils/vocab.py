@@ -55,7 +55,7 @@ class Vocab(object):
                              for tag in sequence])
 
     def id2tag(self, ids):
-        ids = cast_list(ids, squeeze=False)
+        ids = cast_list(ids)
         return [self.tags[i] for i in ids]
 
     def rel2id(self, sequence):
@@ -63,7 +63,7 @@ class Vocab(object):
                              for rel in sequence])
 
     def id2rel(self, ids):
-        ids = cast_list(ids, squeeze=False)
+        ids = cast_list(ids)
         return [self.rels[i] for i in ids]
 
     def char2id(self, sequence, max_length=20):
@@ -101,7 +101,7 @@ class Vocab(object):
                              if regex.match(r'\p{P}+$', word))
         self.n_words = len(self.words)
 
-    def numericalize(self, corpus, is_tag=True, training=True):
+    def numericalize(self, corpus, training=True, is_tag=True):
         words = [self.word2id(seq) for seq in corpus.words]
         if is_tag:
             seqs = [self.tag2id(seq) for seq in corpus.tags]

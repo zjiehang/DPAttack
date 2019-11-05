@@ -6,8 +6,9 @@ from dpattack.utils.metric import ParserMetric
 from dpattack.utils.corpus import Corpus
 from dpattack.utils.pretrained import Pretrained
 from dpattack.utils.vocab import Vocab
-from dpattack.models import WordParser, WordTagParser, WordCharParser, CharParser, PosTagger
-from dpattack.utils.data import TextDataset, batchify
+from dpattack.libs.luna.ckpt_utils import fetch_best_ckpt_name
+from dpattack.models import PosTagger
+from dpattack.utils.data import TextDataset, batchify,collate_fn
 from dpattack.task import ParserTask, TaggerTask
 
 from torch.utils.data import DataLoader
@@ -27,28 +28,28 @@ class Attack(object):
     def pre_attack(self, config):
         print("Load the models")
         self.vocab = torch.load(config.vocab)
-        self.parser = load_parser(config.parser_model)
-        self.tagger = PosTagger.load(config.tagger_model)
+        self.parser = load_parser(fetch_best_ckpt_name(config.parser_model))
+        self.tagger = PosTagger.load(fetch_best_ckpt_name(config.tagger_model))
         self.model = ParserTask(self.vocab, self.parser)
 
         print("Load the dataset")
         corpus = Corpus.load(config.fdata)
-        dataset = TextDataset(self.vocab.numericalize(corpus, True))
+        dataset = TextDataset(self.vocab.numericalize(corpus, training=True))
         loader = DataLoader(dataset=dataset, collate_fn=collate_fn)
-        return corpus, loader
+        return loader
 
     def get_seqs_name(self, seqs):
         # assert seqs.shape
         if len(seqs.shape) == 2:
-            return self.vocab.word2id(seqs.squeeze(0))
+            return self.vocab.id2word(seqs.squeeze(0))
         else:
-            return self.vocab.word2id(seqs)
+            return self.vocab.id2word(seqs)
 
     def get_tags_name(self, tags):
         if len(tags.shape) == 2:
-            return self.vocab.tag2id(tags.squeeze(0))
+            return self.vocab.id2tag(tags.squeeze(0))
         else:
-            return self.vocab.tag2id(tags)
+            return self.vocab.id2tag(tags)
 
     def decode(self, s_arc, s_rel):
         pred_arcs = s_arc.argmax(dim=-1)
@@ -80,7 +81,7 @@ class Attack(object):
         The returning value is      [False    True     False    True    True    True    True    True    False]
         '''
         mask = words.ne(pad_index)
-        mask[0] = False
+        mask[:, 0] = False
         if not punct:
             puncts = words.new_tensor(punct_list)
             mask &= words.unsqueeze(-1).ne(puncts).all(-1)

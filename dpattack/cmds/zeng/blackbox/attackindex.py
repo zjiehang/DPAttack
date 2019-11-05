@@ -7,6 +7,7 @@ For substitute, two method: unk(replace each word to <unk>) and pos_tag
 import math
 import torch
 import numpy as np
+from dpattack.cmds.zeng.blackbox.constant import CONSTANT
 
 class AttackIndex(object):
     def __init__(self, config):
@@ -32,20 +33,19 @@ class AttackIndex(object):
 class AttackIndexInserting(AttackIndex):
     def __init__(self, config):
         super(AttackIndexInserting, self).__init__(config)
-        self.AuxiliaryVerb = ["do", "did", "does", "have", "has", "had"]
 
     def get_attack_index(self, seqs, tags, arcs):
         index = []
         length = len(tags)
         for i in range(length):
-            if tags[i] == 'NN' or tags[i] == 'NNS':
+            if tags[i] in CONSTANT.NOUN_TAG:
                 # current index is a NN, check the word before it
                 if self.check_noun(tags, i):
-                    index.append(i)
-            elif tags[i].startswith('VB'):
+                    index.append(i - 1)
+            elif tags[i].startswith(CONSTANT.VERB_TAG):
                 # current index is a VB, check whether this VB is modified by a RB
-                if self.check_verb(seqs, tags, arcs, i):
-                    index.append(i + 1)
+                if self.check_verb(seqs[i-1], tags, arcs, i):
+                    index.append(i)
         index = list(set(index))
         return index
         #return self.get_random_index_by_length_rate(index, self.revised_rate, length)
@@ -55,15 +55,15 @@ class AttackIndexInserting(AttackIndex):
             return True
         else:
             tag_before_word_i = tags[i-1]
-            if not tag_before_word_i.startswith('NN') and not tag_before_word_i.startswith('JJ'):
+            if not tag_before_word_i.startswith(CONSTANT.NOUN_TAG[0]) and not tag_before_word_i.startswith(CONSTANT.ADJ_TAG):
                 return True
             return False
 
-    def check_verb(self, seqs, tags, arcs, i):
-        if seqs[i] in self.AuxiliaryVerb:
+    def check_verb(self, verb, tags, arcs,i):
+        if verb in CONSTANT.AUXILIARY_VERB:
             return False
         for tag, arc in zip(tags, arcs):
-            if tag.startswith('RB') and (arc - 1) == i:
+            if tag.startswith(CONSTANT.ADV_TAG) and arc.item() == i:
                 return False
         return True
 
@@ -72,9 +72,20 @@ class AttackIndexDeleting(AttackIndex):
     def __init__(self, config):
         super(AttackIndexDeleting, self).__init__(config)
 
-    def get_attack_index(self):
-        pass
+    def get_attack_index(self, tags, arcs):
+        index = []
+        length = len(tags)
+        for i in range(length):
+            if tags[i].startswith(CONSTANT.ADJ_TAG) or tags[i].startswith(CONSTANT.ADV_TAG):
+                if self.check_modifier(arcs,i):
+                    index.append(i)
+        return index
 
+    def check_modifier(self, arcs, index):
+        for arc in arcs:
+            if arc.item() == index:
+                return False
+        return True
 
 class AttackIndexUnkReplacement(AttackIndex):
     def __init__(self, config, parser = None):
@@ -95,7 +106,7 @@ class AttackIndexUnkReplacement(AttackIndex):
         #   [<ROOT>    1    2   3   4   <unk>]]
         seq_idx_unk = self.generate_unk_seqs(seq_idx, length)
         tag_idx_unk = self.generate_unk_tags(tag_idx, length)
-        score_arc, score_rel = self.parser.decorator_forward(seq_idx_unk, tag_idx_unk)
+        score_arc, score_rel = self.parser.forward(seq_idx_unk, tag_idx_unk)
         pred_arc = score_arc.argmax(dim=-1)
         non_equal_numbers = self.calculate_non_equal_numbers(pred_arc[:,mask], arcs[mask])
         sorted_index = sorted(range(length), key=lambda k: non_equal_numbers[k], reverse=True)
@@ -138,5 +149,5 @@ class AttackIndexPosTag(AttackIndex):
         self.pos_tag = config.blackbox_pos_tag
 
     def get_attack_index(self, seqs, seq_idx, tags, tag_idx, arcs, mask):
-        index = [index for index, tag in enumerate(tags) if tag.startswith(self.pos_tag)]
+        index = [index - 1 for index, tag in enumerate(tags) if tag.startswith(self.pos_tag)]
         return self.get_random_index_by_length_rate(index, self.revised_rate, len(tags))

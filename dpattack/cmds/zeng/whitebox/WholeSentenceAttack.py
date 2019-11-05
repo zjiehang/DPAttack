@@ -1,4 +1,4 @@
-from dpattack.cmds.zeng.whitebox import WhiteBoxAttackBase
+from dpattack.cmds.zeng.whitebox.base import WhiteBoxAttackBase
 
 class WholeSentenceAttack(WhiteBoxAttackBase):
     def __init__(self):

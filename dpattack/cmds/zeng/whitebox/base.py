@@ -1,4 +1,4 @@
-from dpattack.cmds.attack import Attack
+from dpattack.cmds.zeng.attack import Attack
 
 class WhiteBoxAttackBase(Attack):
     def __init__(self):

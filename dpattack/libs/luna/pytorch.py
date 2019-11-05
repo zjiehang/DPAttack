@@ -14,7 +14,8 @@ def cast_list(array, squeeze=True):
         return cast_list(np.array(array),squeeze)
     if isinstance(array, np.ndarray):
         if squeeze:
-            return array.squeeze().tolist()
+            array = array.squeeze().tolist()
+            return array if isinstance(array, list) else [array]
         else:
             return array.tolist()
 
