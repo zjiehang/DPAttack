@@ -2,6 +2,7 @@
 from torch.utils.data import DataLoader
 
 from dpattack.utils.data import TextDataset, collate_fn
+from dpattack.utils.embedding_searcher import EmbeddingSearcher, cos_dist, euc_dist
 from dpattack.utils.parser_helper import load_parser
 from dpattack.task import ParserTask
 from dpattack.utils.metric import Metric, ParserMetric
@@ -9,8 +10,22 @@ from dpattack.utils.corpus import Corpus
 from tabulate import tabulate
 import torch
 from collections import defaultdict
-from dpattack.libs.luna import log_config, log, fetch_best_ckpt_name
+from dpattack.libs.luna import log_config, log, fetch_best_ckpt_name, show_mean_std
 from dpattack.utils.vocab import Vocab
+
+
+def mask_to_small(val):
+    if val > 0:
+        val = -val
+    val = val - 1000
+    return val
+
+
+def mask_to_large(val):
+    if val < 0:
+        val = - val
+    val = val + 1000
+    return val
 
 
 def generate_tag_filter(corpus, vocab):
@@ -33,11 +48,13 @@ class HackWhole:
         self.vals = {}
         self.task: ParserTask
         self.tag_filter: dict
+        self.embed_searcher: EmbeddingSearcher
 
     def __call__(self, config):
         print("Load the models")
         vocab = torch.load(config.vocab)  # type: Vocab
         parser = load_parser(fetch_best_ckpt_name(config.parser_model))
+
         self.task = ParserTask(vocab, parser)
         log_config('whitelog.txt',
                    log_path=config.workspace,
@@ -57,6 +74,12 @@ class HackWhole:
             self.vals["embed_grad"] = grad_out[0]
 
         parser.embed.register_backward_hook(embed_hook)
+
+        self.embed_searcher = EmbeddingSearcher(
+            embed=parser.embed.weight,
+            idx2word=lambda x: vocab.words[x],
+            word2idx=lambda x: vocab.word_dict[x]
+        )
 
         raw_metrics = ParserMetric()
         attack_metrics = ParserMetric()
@@ -79,7 +102,8 @@ class HackWhole:
             ))
 
             self.vals['forbidden'] = [vocab.unk_index, vocab.pad_index]
-            for pgdid in range(100):
+            max_iteration = 200
+            for pgdid in range(max_iteration):
                 result = self.single_hack(words, tags, arcs, rels,
                                           dist_measure=config.hk_dist_measure,
                                           raw_words=raw_words)
@@ -94,7 +118,7 @@ class HackWhole:
                     log('attack failed at step {}'.format(pgdid))
                     break
                 elif result['code'] == 300:
-                    if pgdid == 99:
+                    if pgdid == max_iteration - 1:
                         raw_metrics += result['raw_metric']
                         attack_metrics += result['raw_metric']
                         log('attack failed at step {}'.format(pgdid))
@@ -109,7 +133,7 @@ class HackWhole:
                     words, tags, arcs, rels,
                     raw_words,
                     target_tags=['NN', 'JJ'],
-                    dist_measure='enc',
+                    dist_measure='euc',
                     verbose=False):
         vocab = self.task.vocab
         parser = self.task.model
@@ -134,7 +158,7 @@ class HackWhole:
         exist_target_tag = False
         for i in range(tags.size(1)):
             if vocab.tags[tags[0][i]] not in target_tags:
-                grad_norm[0][i] -= 99999.
+                grad_norm[0][i] = -(grad_norm[0][i] + 1000)
             else:
                 exist_target_tag = True
         if not exist_target_tag:
@@ -148,24 +172,27 @@ class HackWhole:
         self.vals['forbidden'].append(word_vid.item())
 
         # Find a word to change
-        changed = embed[word_vid] - max_grad * 1
-        dist = {
-            'euc': lambda: (changed - embed).pow(2).sum(dim=1),
-            'cos': lambda: torch.nn.functional.cosine_similarity(
-                embed, changed.repeat(embed.size(0), 1), dim=1)
-        }[dist_measure]()
+        changed = embed[word_vid] + max_grad * 1000
+        # changed = embed[word_vid] + torch.sign(max_grad) * 0.01
+        # show_mean_std(embed[word_vid])
+        # show_mean_std(max_grad)
+        dist = {'euc': euc_dist, 'cos': cos_dist}[dist_measure](changed, embed)
+        # print('>>> before moving')
+        # self.embed_searcher.find_neighbours(embed[word_vid],10, 'euc', True)
+        # print('>>> after moving')
+        # self.embed_searcher.find_neighbours(changed, 10, 'euc', True)
 
         must_tag = vocab.tags[tags[0][word_sid].item()]
         legal_tag_index = self.tag_filter[must_tag].to(dist.device)
         legal_tag_mask = dist.new_zeros(dist.size()) \
             .index_fill_(0, legal_tag_index, 1.).byte()
 
-        dist.masked_fill_(1 - legal_tag_mask, 99999.)
+        dist.masked_fill_(1 - legal_tag_mask, 1000.)
 
         for ele in self.vals['forbidden']:
-            dist[ele] = 99999.
+            dist[ele] = 1000.
         word_vid_to_rpl = dist.argmin()
-        # A forbidden word maybe chosen if all words are forbidden(99999.)
+        # A forbidden word maybe chosen if all words are forbidden(1000.)
         if word_vid_to_rpl.item() in self.vals['forbidden']:
             log('Attack failed.')
             return {'code': 404,
@@ -184,7 +211,7 @@ class HackWhole:
             print('After Attacking: \n\t{}\n\t{}'.format(
                 " ".join(repl_words_text), " ".join(tags_text)
             ))
-        pred_arcs, pred_rels = self.task.predict([(repl_words, tags)])
+        pred_tags, pred_arcs, pred_rels = self.task.predict([(repl_words, tags)])
         loss, metric = self.task.evaluate([(repl_words, tags, arcs, rels)])
         table = []
         for i in range(words.size(1)):
