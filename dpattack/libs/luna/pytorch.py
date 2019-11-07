@@ -161,8 +161,9 @@ def load_word2vec(embedding: torch.nn.Embedding,
     embedding.weight.data.copy_(torch.from_numpy(pre_embedding))
 
 
-def show_mean_std(tensor):
-    print("[INFO] Mean {:.4f} Std {:.4f} Max {:.4f}".format(
+def show_mean_std(tensor, name=""):
+    print("[INFO] {} Mean {:.4f} Std {:.4f} Max {:.4f}".format(
+        name,
         tensor.mean().item(),
         tensor.std().item(),
         tensor.max().item()
