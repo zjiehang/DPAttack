@@ -65,7 +65,7 @@ class WordCharParser(nn.Module):
         mask = words.ne(self.pad_index)
         lens = mask.sum(dim=1)
         # set the indices larger than num_embeddings to unk_index
-        ext_mask = words.ge(self.pretrained.num_embeddings)
+        ext_mask = words.ge(self.embed.num_embeddings)
         # ext_mask = words.ge(self.embed.num_embeddings)
         ext_words = words.masked_fill(ext_mask, self.unk_index)
 
