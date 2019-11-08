@@ -170,6 +170,26 @@ def show_mean_std(tensor, name=""):
     ))
 
 
+def idx_to_msk(idx, num_classes):
+    """
+    idx: [1, 2, 3]
+    msk: [[0, 1, 0, 0],
+          [0, 0, 1, 0],
+          [0, 0, 0, 1]]
+    """
+    assert idx.dim() == 1, "the dimension of idx must be 1, e.g. [1, 2, 3]"
+    msk = torch.zeros((idx.size(0), num_classes), device=idx.device)
+    msk.scatter_(1, idx.view(-1, 1), 1)
+    msk = msk.byte()
+    return msk
+
+
+def msk_to_idx(msk):
+    assert msk.sum() == msk.size(0), \
+        "only one element is allowed to be 1 in each row"
+    return msk.nonzero()[:, 1].flatten()
+
+
 # def flip_by_length(inputs, lengths):
 #     rev_inputs = []
 #     for it_id, it_input in enumerate(inputs):
@@ -219,16 +239,16 @@ def show_mean_std(tensor, name=""):
 #     return loss
 
 
-class NonLinearLayerWithRes(torch.nn.Module):
-    def __init__(self, d_in, d_hidden, dropout):
-        super(NonLinearLayerWithRes, self).__init__()
-        self.fc1 = torch.nn.Linear(d_in, d_hidden)
-        self.fc2 = torch.nn.Linear(d_hidden, d_in)
-        self.drop = torch.nn.Dropout(dropout)
-
-    def forward(self, x):
-        out = self.fc2(F.relu(self.fc1(x)))
-        out += x
-        out = self.drop(out)
-        # out = torch.nn.LayerNorm(out)
-        return out
+# class NonLinearLayerWithRes(torch.nn.Module):
+#     def __init__(self, d_in, d_hidden, dropout):
+#         super(NonLinearLayerWithRes, self).__init__()
+#         self.fc1 = torch.nn.Linear(d_in, d_hidden)
+#         self.fc2 = torch.nn.Linear(d_hidden, d_in)
+#         self.drop = torch.nn.Dropout(dropout)
+#
+#     def forward(self, x):
+#         out = self.fc2(F.relu(self.fc1(x)))
+#         out += x
+#         out = self.drop(out)
+#         # out = torch.nn.LayerNorm(out)
+#         return out
