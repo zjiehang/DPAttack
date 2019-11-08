@@ -1,6 +1,6 @@
 import torch
 from tabulate import tabulate
-
+import numpy as np
 from typing import Union
 
 
@@ -14,8 +14,63 @@ class EmbeddingSearcher:
         self.idx2word = idx2word
 
     def show_embedding_info(self):
-        show_mean_std(self.embed, 'params of embed')
-        show_mean_std(torch.norm(self.embed, p=2, dim=1), 'norm of embed')
+        print('*** Statistics of parameters and 2-norm ***')
+        show_mean_std(self.embed, 'Param')
+        show_mean_std(torch.norm(self.embed, p=2, dim=1), 'Norm')
+
+        print('*** Statistics of distances in a N-nearest neighbourhood ***')
+        nbr_num = [5, 10, 20, 50, 100, 200, 500]
+        dists = {nbr: [] for nbr in nbr_num}
+        for ele in cast_list(torch.randint(self.embed.size(0), (50,))):
+            if self.embed[ele].sum() == 0.:
+                continue
+            idxs, vals = self.find_neighbours(ele, 500, 'euc', False)
+            for nbr in nbr_num:
+                dists[nbr].append(vals[1:nbr + 1])
+        table = []
+        for nbr in nbr_num:
+            dists[nbr] = torch.cat(dists[nbr])
+            table.append([nbr,
+                          dists[nbr].mean().item(),
+                          dists[nbr].std().item()])
+        print(tabulate(table, headers=['N', 'mean', 'std'], floatfmt='.2f'))
+        # exit()
+
+        print('*** Statistics of distances in a N-nearest neighbourhood ***\n'
+              '    when randomly moving by different step sizes')
+        mve_nom = [1, 2, 5, 10, 20, 50]
+        nbr_num = [5, 10, 20, 50, 100, 500]
+        dists = {mve: {nbr: [] for nbr in nbr_num} for mve in mve_nom}
+        cover = {mve: {nbr: [] for nbr in nbr_num} for mve in mve_nom}
+        for ele in cast_list(torch.randint(self.embed.size(0), (50,))):
+            if self.embed[ele].sum() == 0.:
+                continue
+            vect = torch.rand_like(self.embed[ele])
+            vect = vect / torch.norm(vect)
+            ridxs, rvals = self.find_neighbours(self.embed[ele], 500, 'euc', False)
+            for mve in mve_nom:
+                idxs, vals = self.find_neighbours(self.embed[ele] + vect * mve,
+                                                  500, 'euc', False)
+                for nbr in nbr_num:
+                    dists[mve][nbr].append(vals[1:nbr + 1])
+                    cover[mve][nbr].append(compare_idxes(idxs[1:nbr + 1], ridxs[1:nbr + 1]))
+        table = []
+        for mve in mve_nom:
+            row = [mve]
+            for nbr in nbr_num:
+                dist = torch.cat(dists[mve][nbr])
+                row.append(dist.mean().item())
+                row.append("{:.1f}%".format(np.mean(cover[mve][nbr]) / nbr * 100))
+            table.append(row)
+
+        print(tabulate(table,
+                       headers=['Step',
+                                'D-5', 'I-5',
+                                'D-10', 'I-10',
+                                'D-20', 'I-20',
+                                'D-50', 'I-50',
+                                'D-100', 'I-100'],
+                       floatfmt='.2f'))
 
     def find_neighbours(self,
                         element: Union[int, str, torch.Tensor],
@@ -58,14 +113,14 @@ def euc_dist(qry, mem):
     return torch.sqrt((qry - mem).pow(2).sum(dim=1))
 
 
+def compare_idxes(nbr1, nbr2):
+    nbr1 = set(cast_list(nbr1))
+    nbr2 = set(cast_list(nbr2))
+    inter = nbr1.intersection(nbr2)
+    return len(inter)
+
+
 if __name__ == '__main__':
-
-    def compare_idxes(nbr1, nbr2):
-        nbr1 = set(cast_list(nbr1))
-        nbr2 = set(cast_list(nbr2))
-        inter = nbr1.intersection(nbr2)
-        return len(inter)
-
 
     from dpattack.libs.luna import fetch_best_ckpt_name, cast_list, show_mean_std
     from dpattack.utils.parser_helper import load_parser
@@ -77,10 +132,13 @@ if __name__ == '__main__':
     esglv = EmbeddingSearcher(embed=vocab.embeddings,
                               idx2word=lambda x: vocab.words[x],
                               word2idx=lambda x: vocab.word_dict[x])
+    # esglv.show_embedding_info()
+    # exit()
     esmdl = EmbeddingSearcher(embed=parser.embed.weight,
                               idx2word=lambda x: vocab.words[x],
                               word2idx=lambda x: vocab.word_dict[x])
-
+    esmdl.show_embedding_info()
+    exit()
     # esglv.show_embedding_info()
     # es.show_embedding_info()
     #
