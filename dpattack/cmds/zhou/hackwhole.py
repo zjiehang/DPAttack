@@ -10,7 +10,7 @@ from dpattack.utils.corpus import Corpus
 from tabulate import tabulate
 import torch
 from collections import defaultdict
-from dpattack.libs.luna import log_config, log, fetch_best_ckpt_name, show_mean_std
+from dpattack.libs.luna import log_config, log, fetch_best_ckpt_name, show_mean_std, idx_to_msk
 from dpattack.utils.vocab import Vocab
 
 
@@ -88,8 +88,8 @@ class HackWhole:
 
         # batch size == 1
         for sid, (words, tags, arcs, rels) in enumerate(loader):
-            # if sid > 10:
-            #     break
+            if sid != 3:
+                continue
 
             raw_words = words.clone()
             words_text = vocab.id2word(words[0])
@@ -102,11 +102,12 @@ class HackWhole:
             ))
 
             self.vals['forbidden'] = [vocab.unk_index, vocab.pad_index]
-            max_iteration = 200
-            for pgdid in range(max_iteration):
+            for pgdid in range(100):
                 result = self.single_hack(words, tags, arcs, rels,
                                           dist_measure=config.hk_dist_measure,
-                                          raw_words=raw_words)
+                                          raw_words=raw_words,
+                                          # verbose=pgdid in [0, 99]
+                                          )
                 if result['code'] == 200:
                     raw_metrics += result['raw_metric']
                     attack_metrics += result['attack_metric']
@@ -118,7 +119,7 @@ class HackWhole:
                     log('attack failed at step {}'.format(pgdid))
                     break
                 elif result['code'] == 300:
-                    if pgdid == max_iteration - 1:
+                    if pgdid == 99:
                         raw_metrics += result['raw_metric']
                         attack_metrics += result['raw_metric']
                         log('attack failed at step {}'.format(pgdid))
@@ -137,7 +138,6 @@ class HackWhole:
                     verbose=False):
         vocab = self.task.vocab
         parser = self.task.model
-        loss_fn = self.task.criterion
         embed = parser.embed.weight
 
         raw_loss, raw_metric = self.task.evaluate([(raw_words, tags, arcs, rels)])
@@ -148,9 +148,25 @@ class HackWhole:
         mask[:, 0] = 0
         s_arc, s_rel = parser(words, tags)
         s_arc, s_rel = s_arc[mask], s_rel[mask]
-        gold_arcs, gold_rels = arcs[mask], rels[mask]
-        loss = loss_fn(s_arc, gold_arcs)
+        gold_arcs, gold_rels = arcs[mask], rels[mask]  # shape like [7,7,7,0,3]
+
+        # max margin loss
+        msk_gold_arc = idx_to_msk(gold_arcs, num_classes=s_arc.size(1))
+        s_gold = s_arc[msk_gold_arc]
+        s_other = s_arc.masked_fill(msk_gold_arc, -1000.)
+        max_s_other, _ = s_other.max(1)
+        margin = s_gold - max_s_other
+        margin[margin < -1] = -1
+        loss = margin.sum()
+        change_penalty = torch.norm(parser.embed(words[0]) - parser.embed(raw_words[0]),
+                                    p=2, dim=1).sum()
+        print(loss.item(), change_penalty.item())
+        loss += change_penalty
         loss.backward()
+
+        # # cross entropy loss
+        # loss = - self.task.criterion(s_arc, gold_arcs)
+        # loss.backward()
 
         grad_norm = self.vals['embed_grad'].norm(dim=2)
 
@@ -172,8 +188,23 @@ class HackWhole:
         self.vals['forbidden'].append(word_vid.item())
 
         # Find a word to change
-        changed = embed[word_vid] + max_grad * 1000
-        # changed = embed[word_vid] + torch.sign(max_grad) * 0.01
+        if verbose:
+            print(torch.norm(max_grad))
+        # delta = max_grad * 100
+        delta = max_grad / torch.norm(max_grad) * 5
+        changed = embed[word_vid] - delta
+
+        vals, idxs = self.embed_searcher.find_neighbours(changed, 10, 'euc', False)
+        print("|δ| {:.2f}, ⊥ {:.2f}, - {:.2f}, {} ~ {}, {}, {}".format(
+            delta.norm(),
+            vals.min().item(),
+            vals.mean().item(),
+            vocab.words[word_vid],
+            vocab.words[idxs[1].item()],
+            vocab.words[idxs[2].item()],
+            vocab.words[idxs[3].item()],
+        )
+        )
         # show_mean_std(embed[word_vid])
         # show_mean_std(max_grad)
         dist = {'euc': euc_dist, 'cos': cos_dist}[dist_measure](changed, embed)
@@ -227,14 +258,14 @@ class HackWhole:
                 grad_norm[0][i].item()
             ])
 
-        if verbose:
-            print('{} --> {}'.format(
-                vocab.words[word_vid.item()],
-                vocab.words[word_vid_to_rpl.item()]
-            ))
-            print(tabulate(table, floatfmt=('.6f')))
-            print(metric)
-            print('**************************')
+        # if verbose:
+        #     print('{} --> {}'.format(
+        #         vocab.words[word_vid.item()],
+        #         vocab.words[word_vid_to_rpl.item()]
+        #     ))
+        #     print(tabulate(table, floatfmt=('.6f')))
+        #     print(metric)
+        #     print('**************************')
         if metric.uas > raw_metric.uas - 0.1:
             return {'code': 300,
                     'words': repl_words,
