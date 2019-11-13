@@ -155,9 +155,13 @@ class EmbeddingSearcher:
         return tk_vals, tk_idxs
 
 
+# torch.tensor([100]).expand(2000, 100):
+#   return a view, in memory it's still [100]
+# torch.tensor([100]).expand(2000, 1):
+#   return a copied tensor
 def cos_dist(qry, mem):
     return - torch.nn.functional.cosine_similarity(
-        mem, qry.repeat(mem.size(0), 1), dim=1)
+        mem, qry.expand(mem.size(0), mem.size(1)), dim=1)
 
 
 def euc_dist(qry, mem):
