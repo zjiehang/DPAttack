@@ -10,6 +10,7 @@ import argparse
 from typing import List, Dict, NamedTuple, Union
 from colorama import Fore, Back
 import psutil
+from tabulate import tabulate
 from sklearn.metrics import precision_recall_fscore_support as sklearn_prf
 import inspect
 import arrow
@@ -152,6 +153,24 @@ def time_record(sth=None):
         print(sth, "cost {:.3} seconds".format(end - start))
     else:
         print("cost {:.3} seconds".format(end - start))
+
+
+def as_table(x):
+    if isinstance(x, list):
+        return tabulate([[retrieve_name(ele), ele] for ele in x])
+    elif isinstance(x, dict):
+        return tabulate([[k, v] for k, v in x.items()])
+
+
+once_rw_ram = {}
+
+
+def ram_write(k, v):
+    once_rw_ram[k] = v
+
+
+def ram_read(k):
+    return once_rw_ram.pop(k)
 
 
 class ProgressManager:
