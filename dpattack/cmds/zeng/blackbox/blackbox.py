@@ -5,7 +5,7 @@ from dpattack.cmds.zeng.blackbox.blackboxmethod import Substituting, Inserting, 
 from dpattack.utils.corpus import Corpus,init_sentence
 from dpattack.utils.metric import ParserMetric as Metric
 from dpattack.libs.luna.pytorch import cast_list
-from dpattack.utils.utils import is_chars_judger
+from dpattack.utils.parser_helper import is_chars_judger
 import torch
 
 

@@ -5,7 +5,7 @@ from dpattack.utils.metric import ParserMetric,TaggerMetric
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
-from dpattack.utils.utils import is_chars_judger
+from dpattack.utils.parser_helper import is_chars_judger
 
 
 class Task(object):
@@ -145,7 +145,7 @@ class TaggerTask(Task):
     def train(self, loader, **kwargs):
         self.model.train()
 
-        for words, tags, arcs, rels in loader:
+        for words, tags, chars, arcs, rels in loader:
             self.optimizer.zero_grad()
 
             mask = words.ne(self.vocab.pad_index)
@@ -167,7 +167,7 @@ class TaggerTask(Task):
 
         loss, metric = 0, TaggerMetric()
 
-        for words, tags, arcs, rels in loader:
+        for words, tags, chars, arcs, rels in loader:
             mask = words.ne(self.vocab.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0
@@ -188,7 +188,7 @@ class TaggerTask(Task):
         self.model.eval()
 
         all_tags = []
-        for words, tags in loader:
+        for words, tags, chars in loader:
             mask = words.ne(self.vocab.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0

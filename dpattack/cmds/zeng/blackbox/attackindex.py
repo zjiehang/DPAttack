@@ -8,7 +8,7 @@ import math
 import torch
 import numpy as np
 from dpattack.cmds.zeng.blackbox.constant import CONSTANT
-from dpattack.utils.utils import is_chars_judger
+from dpattack.utils.parser_helper import is_chars_judger
 from dpattack.libs.luna.pytorch import cast_list
 
 class AttackIndex(object):
