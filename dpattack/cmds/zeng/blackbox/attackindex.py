@@ -119,7 +119,7 @@ class AttackIndexUnkReplacement(AttackIndex):
         non_equal_numbers = self.calculate_non_equal_numbers(pred_arc[:,mask.squeeze(0)], arcs[mask])
         sorted_index = sorted(range(length), key=lambda k: non_equal_numbers[k], reverse=True)
         number = self.get_number(self.revised_rate, length)
-        return [index_to_be_replace[index] for index in sorted_index[:number]]
+        return [index_to_be_replace[index] - 1 for index in sorted_index[:number]]
 
     def generate_unk_seqs(self, seq, length, index_to_be_replace):
         '''
