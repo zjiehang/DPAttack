@@ -132,14 +132,14 @@ class HackWhole:
         log('dist measure', config.hk_dist_measure)
 
         # batch size == 1
-        for sid, (var_words, tags, arcs, rels) in enumerate(loader):
+        for sid, (var_words, tags, chars, arcs, rels) in enumerate(loader):
             if sid > config.hk_sent_num:
                 continue
 
             raw_words = var_words.clone()
             words_text = vocab.id2word(var_words[0])
             tags_text = vocab.id2tag(tags[0])
-            _, raw_metric = self.task.evaluate([(raw_words, tags, arcs, rels)])
+            _, raw_metric = self.task.evaluate([(raw_words, tags, None, arcs, rels)])
 
             self.forbidden_idxs = [vocab.unk_index, vocab.pad_index]
             self.contiguous_embed = {}
@@ -351,13 +351,13 @@ class HackWhole:
         """
         # print('START EVALUATING')
         # print([self.vocab.words[ele] for ele in self.forbidden_idxs])
-        loss, metric = self.task.evaluate([(new_words, tags, arcs, rels)])
+        loss, metric = self.task.evaluate([(new_words, tags, None, arcs, rels)])
 
         def _gen_log_table():
             new_words_text = [self.vocab.words[i.item()] for i in new_words[0]]
             raw_words_text = [self.vocab.words[i.item()] for i in raw_words[0]]
             tags_text = [self.vocab.tags[i.item()] for i in tags[0]]
-            pred_tags, pred_arcs, pred_rels = self.task.predict([(new_words, tags)])
+            pred_tags, pred_arcs, pred_rels = self.task.predict([(new_words, tags, None)])
 
             table = []
             for i in range(words.size(1)):
