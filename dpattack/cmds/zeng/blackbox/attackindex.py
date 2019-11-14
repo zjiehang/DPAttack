@@ -8,6 +8,8 @@ import math
 import torch
 import numpy as np
 from dpattack.cmds.zeng.blackbox.constant import CONSTANT
+from dpattack.utils.utils import is_chars_judger
+from dpattack.libs.luna.pytorch import cast_list
 
 class AttackIndex(object):
     def __init__(self, config):
@@ -63,7 +65,7 @@ class AttackIndexInserting(AttackIndex):
         if verb in CONSTANT.AUXILIARY_VERB:
             return False
         for tag, arc in zip(tags, arcs):
-            if tag.startswith(CONSTANT.ADV_TAG) and arc.item() == i:
+            if tag.startswith(CONSTANT.ADV_TAG) and arc == i:
                 return False
         return True
 
@@ -83,55 +85,70 @@ class AttackIndexDeleting(AttackIndex):
 
     def check_modifier(self, arcs, index):
         for arc in arcs:
-            if arc.item() == index:
+            if arc == index:
                 return False
         return True
 
 class AttackIndexUnkReplacement(AttackIndex):
-    def __init__(self, config, parser = None):
+    def __init__(self, config, vocab = None, parser = None):
         super(AttackIndexUnkReplacement, self).__init__(config)
 
         self.parser = parser
+        self.vocab = vocab
+        self.unk_chars = self.get_unk_chars_idx(self.vocab.UNK)
 
-    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, arcs, mask):
-        length = seq_idx.shape[0] - 1
+    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
+        length = torch.sum(mask).item()
+        index_to_be_replace = cast_list(mask.squeeze(0).nonzero())
         # for metric when change a word to <unk>
         # change each word to <unk> in turn, taking the worst case.
-        # For a seq_index [<ROOT>   1   2   3   4   5]
+        # For a seq_index [<ROOT>   1   2   3   ,   5]
         # seq_idx_unk is
-        #  [[<ROOT>    <unk>    2   3   4   5]
-        #   [<ROOT>    1    <unk>   3   4   5]
-        #   [<ROOT>    1    2   <unk>   4   5]
-        #   [<ROOT>    1    2   3   <unk>   5]
-        #   [<ROOT>    1    2   3   4   <unk>]]
-        seq_idx_unk = self.generate_unk_seqs(seq_idx, length)
-        tag_idx_unk = self.generate_unk_tags(tag_idx, length)
-        score_arc, score_rel = self.parser.forward(seq_idx_unk, tag_idx_unk)
+        #  [[<ROOT>    <unk>    2   3   ,   5]
+        #   [<ROOT>    1    <unk>   3   ,   5]
+        #   [<ROOT>    1    2   <unk>   ,   5]
+        #   [<ROOT>    1    2   3   ,   <unk>]]
+        seq_idx_unk = self.generate_unk_seqs(seq_idx, length, index_to_be_replace)
+        if is_chars_judger(self.parser):
+            char_idx_unk = self.generate_unk_chars(chars, length, index_to_be_replace)
+            score_arc, score_rel = self.parser.forward(seq_idx_unk, char_idx_unk)
+        else:
+            tag_idx_unk = self.generate_unk_tags(tag_idx, length)
+            score_arc, score_rel = self.parser.forward(seq_idx_unk, tag_idx_unk)
         pred_arc = score_arc.argmax(dim=-1)
-        non_equal_numbers = self.calculate_non_equal_numbers(pred_arc[:,mask], arcs[mask])
+        non_equal_numbers = self.calculate_non_equal_numbers(pred_arc[:,mask.squeeze(0)], arcs[mask])
         sorted_index = sorted(range(length), key=lambda k: non_equal_numbers[k], reverse=True)
         number = self.get_number(self.revised_rate, length)
-        return sorted_index[:number]
+        return [index_to_be_replace[index] for index in sorted_index[:number]]
 
-    def generate_unk_seqs(self, seq, length):
+    def generate_unk_seqs(self, seq, length, index_to_be_replace):
         '''
         :param seq: seq_idx [<ROOT>   1   2   3   4   5], shape: [length + 1]
         :param length: sentence length
         :return:
-            [[<ROOT>    <unk>    2   3   4   5]
-            [<ROOT>    1    <unk>   3   4   5]
-            [<ROOT>    1    2   <unk>   4   5]
-            [<ROOT>    1    2   3   <unk>   5]
-            [<ROOT>    1    2   3   4   <unk>]]
+        # for metric when change a word to <unk>
+        # change each word to <unk> in turn, taking the worst case.
+        # For a seq_index [<ROOT>   1   2   3   ,   5]
+        # seq_idx_unk is
+        #  [[<ROOT>    <unk>    2   3   ,   5]
+        #   [<ROOT>    1    <unk>   3   ,   5]
+        #   [<ROOT>    1    2   <unk>   ,   5]
+        #   [<ROOT>    1    2   3   ,   <unk>]]
             shape: [length, length + 1]
         '''
-        seqs_repeat = seq.repeat(length + 1, 1)
-        diag_element = torch.diag(seqs_repeat, 1) - 1
-        diag_matrix = torch.diag(diag_element, 1)
-        return (seqs_repeat - diag_matrix)[:-1]
+        unk_seqs = seq.repeat(length, 1)
+        for count, index in enumerate(index_to_be_replace):
+            unk_seqs[count, index] = self.vocab.unk_index
+        return unk_seqs
 
     def generate_unk_tags(self, tag, length):
         return tag.repeat(length, 1)
+
+    def generate_unk_chars(self, char, length, index_to_be_replace):
+        unk_chars = char.repeat(length, 1, 1)
+        for count, index in enumerate(index_to_be_replace):
+            unk_chars[count, index] = self.unk_chars
+        return unk_chars
 
     def calculate_non_equal_numbers(self, pred_arc, gold_arc):
         '''
@@ -142,12 +159,17 @@ class AttackIndexUnkReplacement(AttackIndex):
         non_equal_numbers = [torch.sum(torch.ne(arc, gold_arc)).item() for arc in pred_arc]
         return non_equal_numbers
 
+    def get_unk_chars_idx(self, UNK_TOKEN):
+        unk_chars = self.vocab.char2id([UNK_TOKEN]).squeeze(0)
+        if torch.cuda.is_available():
+            unk_chars = unk_chars.cuda()
+        return unk_chars
 
 class AttackIndexPosTag(AttackIndex):
     def __init__(self, config):
         super(AttackIndexPosTag, self).__init__(config)
         self.pos_tag = config.blackbox_pos_tag
 
-    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, arcs, mask):
+    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
         index = [index - 1 for index, tag in enumerate(tags) if tag.startswith(self.pos_tag)]
         return self.get_random_index_by_length_rate(index, self.revised_rate, len(tags))

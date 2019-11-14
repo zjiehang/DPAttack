@@ -2,6 +2,7 @@ from dpattack.utils.utils import get_blackbox_augmentor
 from dpattack.utils.corpus import Corpus
 from dpattack.cmds.zeng.blackbox.attackindex import *
 from dpattack.libs.luna.pytorch import cast_list
+from dpattack.utils.aug import CharTypoAug
 
 
 class BlackBoxMethod(object):
@@ -48,29 +49,25 @@ class BlackBoxMethod(object):
 class Substituting(BlackBoxMethod):
     def __init__(self, config, vocab, tagger, ROOT_TAG, parser=None):
         super(Substituting, self).__init__(tagger, vocab, ROOT_TAG)
-        self.index = self.get_index(config, parser)
+        self.index = self.get_index(config, vocab, parser)
         self.aug = get_blackbox_augmentor(config.blackbox_model, config.path, config.revised_rate, vocab=vocab, ftrain=config.ftrain)
 
-    def get_index(self, config, parser=None):
+    def get_index(self, config, vocab=None, parser=None):
         if config.blackbox_index == 'pos':
             return AttackIndexPosTag(config)
         else:
-            if parser is None:
-                print('unk replacement can not missing dpattack')
+            if parser is None and vocab is None:
+                print('unk replacement can not missing dpattack and vocab')
                 exit()
-            return AttackIndexUnkReplacement(config, parser=parser)
+            return AttackIndexUnkReplacement(config, vocab=vocab, parser=parser)
 
-    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, arcs, rels, mask):
-        seq_idx, tag_idx, arcs, mask = map(lambda x: x.squeeze(0) if len(x.shape) == 2 else x,
-                                                 [seq_idx, tag_idx, arcs, mask])
+    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
         # generate word index to be attacked
-        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, arcs, mask)
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
         # generate word candidates to be attacked
         candidates, indexes = self.substituting(seqs, attack_index)
         # check candidates by pos_tagger
         attack_seq, revised_list = self.check_pos_tag(seqs, tag_idx, candidates, indexes)
-        #mask = self.update_mask(mask, revised_list)
-        arcs, mask = map(lambda x: x.unsqueeze(0) if len(x.shape) == 1 else x,[arcs, mask])
         return [Corpus.ROOT] + attack_seq, mask, arcs, rels, len(revised_list)
 
     def substituting(self, seq, index):
@@ -100,12 +97,14 @@ class Substituting(BlackBoxMethod):
         return final_attack_seq, revised_index_list
 
     def check_pos_tag_under_each_index(self, seqs, tag_idx, candidate, index):
+        if len(candidate) == 0:
+            return self.FALSE_TOKEN
         attack_seq_list = self.duplicate_sentence_with_candidate_replacement(seqs, candidate, index)
         # change seq list to idx
         # add <ROOT> token to the first token of each setence
         attack_seq_idx = torch.cat([self.vocab.word2id([Corpus.ROOT] + s).unsqueeze(0) for s in attack_seq_list], dim=0)
         attack_tag_idx = self.tagger.decorator_forward(attack_seq_idx, self.ROOT_TAG)
-        tag_equal_flag = torch.eq(attack_tag_idx[:, index + 1], tag_idx[index + 1])
+        tag_equal_flag = torch.eq(attack_tag_idx[:, index + 1], tag_idx[0, index + 1])
         if torch.sum(tag_equal_flag) != 0:
             attack_succeed_index = tag_equal_flag.nonzero().squeeze(0)
             return attack_succeed_index[0]
@@ -118,17 +117,18 @@ class Inserting(BlackBoxMethod):
         self.index = AttackIndexInserting(config)
         self.aug = get_blackbox_augmentor(config.blackbox_model, config.path, config.revised_rate, vocab=vocab,ftrain=config.ftrain)
 
-    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, arcs, rels, mask):
-        seq_idx, tag_idx, arcs, rels, mask = map(lambda x:x.squeeze(0) if len(x.shape)==2 else x,[seq_idx, tag_idx, arcs, rels, mask])
+    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
+        # seq_idx, tag_idx, arcs, rels, mask = map(lambda x:x.squeeze(0) if len(x.shape)==2 else x,[seq_idx, tag_idx, arcs, rels, mask])
         # generate word index to be attacked
-        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), tags, arcs)
+        gold_arcs = cast_list(arcs)
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), tags, gold_arcs)
         # generate word candidates to be attacked
         candidates, indexes = self.inserting(seqs, attack_index)
         # check candidates by pos_tagger
         attack_seq, attack_mask, attack_gold_arc, attack_gold_rel, revised_number = self.check_pos_tag(seqs,
                                                                                                        tags,
                                                                                                        cast_list(mask),
-                                                                                                       cast_list(arcs),
+                                                                                                       gold_arcs,
                                                                                                        self.vocab.id2rel(rels),
                                                                                                        candidates,
                                                                                                        indexes)
@@ -245,15 +245,16 @@ class Deleting(BlackBoxMethod):
         super(Deleting, self).__init__(tagger, vocab, ROOT_TAG)
         self.index = AttackIndexDeleting(config)
 
-    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, arcs, rels, mask):
+    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
         seq_idx, tag_idx, arcs, rels, mask = map(lambda x:x.squeeze(0) if len(x.shape)==2 else x,[seq_idx, tag_idx, arcs, rels, mask])
 
-        attack_index = self.index.get_attack_index(tags, arcs)
+        gold_arcs = cast_list(arcs)
+        attack_index = self.index.get_attack_index(tags, gold_arcs)
         attack_index.sort(reverse=True)
 
         attack_seq = [Corpus.ROOT] + seqs.split()
         attack_mask = cast_list(mask)
-        attack_gold_arc = cast_list(arcs)
+        attack_gold_arc = gold_arcs.copy()
         attack_gold_rel = cast_list(rels)
 
         for index in attack_index:
@@ -271,3 +272,26 @@ class Deleting(BlackBoxMethod):
 
         return attack_seq, attack_mask, attack_gold_arc, attack_gold_rel, len(attack_index)
 
+
+class CharTypo(BlackBoxMethod):
+    def __init__(self, config, vocab, tagger, ROOT_TAG, parser=None):
+        super(CharTypo,self).__init__(tagger, vocab, ROOT_TAG)
+        self.index = self.get_index(config, vocab, parser)
+        self.aug = CharTypoAug(vocab.char_dict)
+
+    def get_index(self, config, vocab=None, parser=None):
+        if config.blackbox_index == 'pos':
+            return AttackIndexPosTag(config)
+        else:
+            if parser is None and vocab is None:
+                print('unk replacement can not missing dpattack and vocab')
+                exit()
+            return AttackIndexUnkReplacement(config, vocab=vocab, parser=parser)
+
+    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
+        # generate word index to be attacked
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
+
+        attack_seq = self.aug.get_aug_idxes(seqs, attack_index)
+
+        return [Corpus.ROOT] + attack_seq, mask, arcs, rels, len(attack_index)

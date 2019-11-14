@@ -1,16 +1,10 @@
 # -*- coding: utf-8 -*-
-
-from datetime import datetime, timedelta
-
 from dpattack.libs.luna import fetch_best_ckpt_name
-from dpattack.utils.parser_helper import init_parser, load_parser
-from dpattack.utils.metric import ParserMetric
+from dpattack.utils.parser_helper import load_parser
 from dpattack.utils.corpus import Corpus
-from dpattack.utils.pretrained import Pretrained
-from dpattack.utils.vocab import Vocab
-from dpattack.models import WordParser, WordTagParser, WordCharParser, CharParser, PosTagger
+from dpattack.models import PosTagger
 from dpattack.utils.data import TextDataset, batchify
-from dpattack.task import ParserTask, TaggerTask
+from dpattack.task import ParserTask
 
 import torch
 

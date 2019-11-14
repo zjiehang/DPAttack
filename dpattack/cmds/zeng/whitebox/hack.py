@@ -1,13 +1,13 @@
 # -*- coding: utf-8 -*-
 
-from dpattack import ParserModel
-from dpattack.utils.metric import Metric
-from dpattack.utils import Corpus
+from dpattack.task import ParserTask
+from dpattack.utils.metric import ParserMetric as Metric
+from dpattack.utils.corpus import Corpus
 from tabulate import tabulate
 import torch
 from collections import defaultdict
 from dpattack.libs.luna import log_config, log
-from dpattack.cmds.zeng.whitebox import WhiteBoxAttackBase
+from dpattack.cmds.zeng.whitebox.base import WhiteBoxAttackBase
 
 
 def generate_tag_filter(corpus, vocab):
@@ -27,27 +27,21 @@ def generate_tag_filter(corpus, vocab):
 class WhiteHack(WhiteBoxAttackBase):
 
     def __init__(self):
-        super(WhiteBoxAttackBase,self).__init__()
+        super(WhiteHack,self).__init__()
+
         self.vals = {}
-        self.model: ParserModel
-        self.tag_filter: dict
+
+    def extract_embed_grad(self, module, grad_in, grad_out):
+        self.vals['embed_grad'] = grad_out[0]
 
     def __call__(self, config):
-        # print("Load the models")
-        # vocab = torch.load(config.vocab)
-        # dpattack = BiaffineParser.load(config.models)
-        # self.models = ParserModel(vocab, dpattack)
+        loader = self.pre_attack(config)
+        self.parser.register_backward_hook(self.extract_embed_grad)
         # log_config('whitelog.txt',
         #            log_path=config.workspace,
         #            default_target='cf')
-        #
-        # print("Load the dataset")
-        corpus, loader = self.pre_attack(config)
-        log_config('whitelog.txt',
-                   log_path=config.workspace,
-                   default_target='cf')
 
-        train_corpus = Corpus.load_parser(config.ftrain)
+        train_corpus = Corpus.load(config.ftrain)
         self.tag_filter = generate_tag_filter(train_corpus, self.vocab)
         # corpus = Corpus.load(config.fdata)
         # dataset = TextDataset(self.vocab.numericalize(corpus, True))
@@ -114,9 +108,9 @@ class WhiteHack(WhiteBoxAttackBase):
                     dist_measure='enc',
                     verbose=False):
         vocab = self.model.vocab
-        parser = self.model.parser
+        parser = self.model.model
         loss_fn = self.model.criterion
-        embed = parser.pretrained.weight
+        embed = parser.embed.weight
 
         raw_loss, raw_metric = self.model.evaluate([(raw_words, tags, arcs, rels)])
 
@@ -186,7 +180,7 @@ class WhiteHack(WhiteBoxAttackBase):
             print('After Attacking: \n\t{}\n\t{}'.format(
                 " ".join(repl_words_text), " ".join(tags_text)
             ))
-        pred_arcs, pred_rels = self.model.predict([(repl_words, tags)])
+        pred_tags, pred_arcs, pred_rels = self.model.predict([(repl_words, tags)])
         loss, metric = self.model.evaluate([(repl_words, tags, arcs, rels)])
         table = []
         for i in range(words.size(1)):

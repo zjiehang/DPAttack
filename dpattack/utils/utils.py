@@ -16,3 +16,10 @@ def get_blackbox_augmentor(method, path, revised_rate, vocab = None, ftrain=None
         print("Unsupporting augmentation method. Program exits!")
         exit()
     return aug
+
+
+def is_chars_judger(model, tags = None, chars = None):
+    if hasattr(model, 'char_lstm'):
+        return True if chars is None else chars
+    else:
+        return False if tags is None else tags

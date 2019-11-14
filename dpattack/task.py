@@ -5,6 +5,7 @@ from dpattack.utils.metric import ParserMetric,TaggerMetric
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
+from dpattack.utils.utils import is_chars_judger
 
 
 class Task(object):
@@ -36,14 +37,14 @@ class ParserTask(Task):
     def train(self, loader):
         self.model.train()
 
-        for words, tags, arcs, rels in loader:
+        for words, tags, chars, arcs, rels in loader:
             self.optimizer.zero_grad()
 
             mask = words.ne(self.vocab.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0
-            tags = self.get_tag(words, tags, mask)
-            s_arc, s_rel = self.model(words, tags)
+            # tags = self.get_tag(words, tags, mask)
+            s_arc, s_rel = self.model(words, is_chars_judger(self.model, tags, chars))
             s_arc, s_rel = s_arc[mask], s_rel[mask]
             gold_arcs, gold_rels = arcs[mask], rels[mask]
 
@@ -59,17 +60,17 @@ class ParserTask(Task):
 
         loss, metric = 0, ParserMetric()
 
-        for words, tags, arcs, rels in loader:
+        for words, tags, chars, arcs, rels in loader:
             mask = words.ne(self.vocab.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0
 
-            tags = self.get_tag(words, tags, mask, tagger)
+            tags = self.get_tags(words, tags, mask, tagger)
             # ignore all punctuation if not specified
             if not punct:
                 puncts = words.new_tensor(self.vocab.puncts)
                 mask &= words.unsqueeze(-1).ne(puncts).all(-1)
-            s_arc, s_rel = self.model(words, tags)
+            s_arc, s_rel = self.model(words, is_chars_judger(self.model, tags, chars))
             s_arc, s_rel = s_arc[mask], s_rel[mask]
             gold_arcs, gold_rels = arcs[mask], rels[mask]
             pred_arcs, pred_rels = self.decode(s_arc, s_rel)
@@ -85,14 +86,14 @@ class ParserTask(Task):
         self.model.eval()
 
         all_tags, all_arcs, all_rels = [], [], []
-        for words, tags in loader:
+        for words, tags, chars in loader:
             mask = words.ne(self.vocab.pad_index)
             # ignore the first token of each sentence
             mask[:, 0] = 0
             lens = mask.sum(dim=1).tolist()
-            tags = self.get_tag(words, tags, mask, tagger)
 
-            s_arc, s_rel = self.model(words, tags)
+            tags = self.get_tags(words, tags, mask, tagger)
+            s_arc, s_rel = self.model(words, is_chars_judger(self.model, tags, chars))
             tags, s_arc, s_rel = tags[mask], s_arc[mask], s_rel[mask]
             pred_arcs, pred_rels = self.decode(s_arc, s_rel)
 
@@ -120,7 +121,7 @@ class ParserTask(Task):
 
         return pred_arcs, pred_rels
 
-    def get_tag(self, words, tags, mask, tagger = None):
+    def get_tags(self, words, tags, mask, tagger):
         if tagger is None:
             return tags
         else:
@@ -130,9 +131,8 @@ class ParserTask(Task):
             pred_tags = s_tags[mask].argmax(-1)
             pred_tags = torch.split(pred_tags, lens)
             pred_tags = pad_sequence(pred_tags, True)
-            pred_tags = torch.cat([tags[:,0].unsqueeze(1),pred_tags],dim=1)
+            pred_tags = torch.cat([torch.zeros_like(pred_tags[:,:1]), pred_tags], dim=1)
             return pred_tags
-
 
 class TaggerTask(Task):
     def __init__(self, vocab, model):

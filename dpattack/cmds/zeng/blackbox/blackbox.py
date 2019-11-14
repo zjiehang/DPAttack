@@ -1,10 +1,11 @@
 import logging
 logging.basicConfig(level=logging.ERROR)
 from dpattack.cmds.zeng.attack import Attack
-from dpattack.cmds.zeng.blackbox.blackboxmethod import Substituting, Inserting, Deleting
+from dpattack.cmds.zeng.blackbox.blackboxmethod import Substituting, Inserting, Deleting,CharTypo
 from dpattack.utils.corpus import Corpus,init_sentence
 from dpattack.utils.metric import ParserMetric as Metric
 from dpattack.libs.luna.pytorch import cast_list
+from dpattack.utils.utils import is_chars_judger
 import torch
 
 
@@ -45,12 +46,16 @@ class BlackBoxAttack(Attack):
 
     def get_attack_seq_generator(self, config):
         method = config.blackbox_method
-        if method == 'insert':
-            return Inserting(config, self.vocab, self.tagger, self.ROOT_TAG)
-        elif method == 'substitute':
-            return Substituting(config, self.vocab, self.tagger, self.ROOT_TAG, parser=self.parser)
-        elif method == 'delete':
-            return Deleting(config, self.vocab, self.tagger, self.ROOT_TAG)
+        input_type = config.input
+        if input_type == 'char':
+            return CharTypo(config, self.vocab, self.tagger, self.ROOT_TAG, parser = self.parser)
+        else:
+            if method == 'insert':
+                return Inserting(config, self.vocab, self.tagger, self.ROOT_TAG)
+            elif method == 'substitute':
+                return Substituting(config, self.vocab, self.tagger, self.ROOT_TAG, parser=self.parser)
+            elif method == 'delete':
+                return Deleting(config, self.vocab, self.tagger, self.ROOT_TAG)
 
     def attack_for_each_process(self, config, loader, attack_corpus):
         #recode revised_number for all sentences
@@ -62,17 +67,17 @@ class BlackBoxAttack(Attack):
         metric_before_attack = Metric()
         metric_after_attack = Metric()
 
-        for index, (seq_idx, tag_idx, arcs, rels) in enumerate(loader):
+        for index, (seq_idx, tag_idx, chars, arcs, rels) in enumerate(loader):
             mask = self.get_mask(seq_idx, self.vocab.pad_index, punct_list=self.vocab.puncts)
             seqs = self.get_seqs_name(seq_idx)
             tags = self.get_tags_name(tag_idx)
-
             if config.pred_tag:
                 tag_idx = self.tagger.decorator_forward(seq_idx, self.ROOT_TAG)
+
             # attack for one sentence
             score_arc_before_attack, score_rel_before_attack,\
             score_arc_after_attack, score_rel_after_attack, \
-            attack_seq, attack_pred_tag, attack_mask, attack_gold_arc, attack_gold_rel, revised_number = self.attack_for_each_sentence(seqs, seq_idx, tags, tag_idx, arcs, rels, mask)
+            attack_seq, attack_pred_tag, attack_mask, attack_gold_arc, attack_gold_rel, revised_number = self.attack_for_each_sentence(seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask)
 
             self.update_metric(metric_before_attack, score_arc_before_attack[mask], score_rel_before_attack[mask], arcs[mask], rels[mask])
             self.update_metric(metric_after_attack, score_arc_after_attack[attack_mask],score_rel_after_attack[attack_mask],attack_gold_arc[attack_mask],attack_gold_rel[attack_mask])
@@ -90,7 +95,7 @@ class BlackBoxAttack(Attack):
 
         return metric_before_attack, metric_after_attack, revised_numbers
 
-    def attack_for_each_sentence(self, seq, seq_idx, tag, tag_idx, arcs, rels, mask):
+    def attack_for_each_sentence(self, seq, seq_idx, tag, tag_idx, chars, arcs, rels, mask):
         '''
         :param seqs:
         :param seq_idx:
@@ -103,19 +108,21 @@ class BlackBoxAttack(Attack):
         # seq length: ignore the first token (ROOT) of each sentence
         with torch.no_grad():
             # for metric before attacking
-            score_arc_before_attack, score_rel_before_attack = self.parser.forward(seq_idx, tag_idx)
+            score_arc_before_attack, score_rel_before_attack = self.parser.forward(seq_idx, is_chars_judger(self.parser, tag_idx, chars))
 
             # for metric after attacking
             # generate the attack sentence under attack_index
-            attack_seq, attack_mask, attack_gold_arc, attack_gold_rel, revised_number = self.attack_seq_generator.generate_attack_seq(' '.join(seq[1:]), seq_idx, tag, tag_idx, arcs, rels, mask)
+            attack_seq, attack_mask, attack_gold_arc, attack_gold_rel, revised_number = self.attack_seq_generator.generate_attack_seq(' '.join(seq[1:]), seq_idx, tag, tag_idx, chars, arcs, rels, mask)
             # get the attack seq idx and tag idx
             attack_seq_idx = self.vocab.word2id(attack_seq).unsqueeze(0)
             if torch.cuda.is_available():
                 attack_seq_idx = attack_seq_idx.cuda()
-            # tag is equal to the origin tag if checking(If not checking, tag should be get by STANFORD POSTAGGER)
             attack_tag_idx = self.tagger.decorator_forward(attack_seq_idx, self.ROOT_TAG)
-
-            score_arc_after_attack, score_rel_after_attack = self.parser.forward(attack_seq_idx, attack_tag_idx)
+            if is_chars_judger(self.parser):
+                attack_chars = self.get_chars_idx_by_seq(attack_seq)
+                score_arc_after_attack, score_rel_after_attack = self.parser.forward(attack_seq_idx, attack_chars)
+            else:
+                score_arc_after_attack, score_rel_after_attack = self.parser.forward(attack_seq_idx, attack_tag_idx)
 
             return score_arc_before_attack, score_rel_before_attack, \
                    score_arc_after_attack, score_rel_after_attack, \
@@ -132,4 +139,8 @@ class BlackBoxAttack(Attack):
         print("Black box attack. Method: {}, Rate: {}, Modified:{:.2f}".format(config.blackbox_method,config.revised_rate,revised_numbers/len(loader.dataset.lengths)))
         print("After attacking: {}".format(metric_after_attack))
 
-
+    def get_chars_idx_by_seq(self, sentence):
+        chars = self.vocab.char2id(sentence).unsqueeze(0)
+        if torch.cuda.is_available():
+            chars = chars.cuda()
+        return chars

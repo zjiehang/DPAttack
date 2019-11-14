@@ -101,17 +101,15 @@ class Vocab(object):
                              if regex.match(r'\p{P}+$', word))
         self.n_words = len(self.words)
 
-    def numericalize(self, corpus, training=True, is_tag=True):
+    def numericalize(self, corpus, training=True):
         words = [self.word2id(seq) for seq in corpus.words]
-        if is_tag:
-            seqs = [self.tag2id(seq) for seq in corpus.tags]
-        else:
-            seqs = [self.char2id(seq) for seq in corpus.words]
+        tags = [self.tag2id(seq) for seq in corpus.tags]
+        chars = [self.char2id(seq) for seq in corpus.words]
         if not training:
-            return words, seqs
+            return words, tags, chars
         arcs = [torch.tensor(seq) for seq in corpus.heads]
         rels = [self.rel2id(seq) for seq in corpus.rels]
-        return words, seqs, arcs, rels
+        return words, tags, chars, arcs, rels
 
     @classmethod
     def from_corpus(cls, corpus, min_freq=1):
