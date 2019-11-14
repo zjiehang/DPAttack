@@ -285,6 +285,24 @@ def accuracy(scores: List[List], gold: List):
     return hit(scores, gold, 1)
 
 
+class CherryPicker:
+    def __init__(self, lower_is_better):
+        self.lower_is_better = lower_is_better
+        self.history_values = []
+        self.history_infos = []
+
+    def add(self, value, info):
+        self.history_infos.append(info)
+        self.history_values.append(value)
+
+    def select_best_point(self):
+        if self.lower_is_better:
+            chosen_id = int(np.argmin(self.history_values))
+        else:
+            chosen_id = int(np.argmax(self.history_values))
+        return chosen_id, self.history_values[chosen_id], self.history_infos[chosen_id]
+
+
 class TrainingStopObserver:
     def __init__(self,
                  lower_is_better,

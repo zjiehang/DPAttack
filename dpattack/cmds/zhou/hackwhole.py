@@ -1,6 +1,10 @@
 # -*- coding: utf-8 -*-
+from contextlib import contextmanager
+from typing import Union, Optional
+
 from torch.utils.data import DataLoader
 
+from dpattack.models import WordTagParser, WordParser, PosTagger
 from dpattack.utils.data import TextDataset, collate_fn
 from dpattack.utils.embedding_searcher import EmbeddingSearcher, cos_dist, euc_dist
 from dpattack.utils.parser_helper import load_parser
@@ -10,7 +14,8 @@ from dpattack.utils.corpus import Corpus
 from tabulate import tabulate
 import torch
 from collections import defaultdict
-from dpattack.libs.luna import log_config, log, fetch_best_ckpt_name, show_mean_std, idx_to_msk
+from dpattack.libs.luna import log_config, log, fetch_best_ckpt_name, show_mean_std, idx_to_msk, cast_list, as_table, \
+    ram_write, ram_read, TrainingStopObserver, CherryPicker
 from dpattack.utils.vocab import Vocab
 
 
@@ -45,20 +50,49 @@ def generate_tag_filter(corpus, vocab):
 class HackWhole:
 
     def __init__(self):
-        self.vals = {}
         self.task: ParserTask
         self.tag_filter: dict
         self.embed_searcher: EmbeddingSearcher
+        self.tagger: PosTagger
+
+        self.contiguous_embed = {}
+        self.__contiguous_embed_flag = None
+
+    @property
+    def vocab(self) -> Vocab:
+        return self.task.vocab
+
+    @property
+    def parser(self) -> Union[WordTagParser, WordParser]:
+        return self.task.model
+
+    @contextmanager
+    def use_contiguous_embed(self, flag=True):
+        # whatever the flag, after execution it will be set to False
+        if self.__contiguous_embed_flag is not None:
+            raise Exception('Do not use a use_contiguous_embed '
+                            'within a use_contiguous_embed')
+        self.__contiguous_embed_flag = flag
+        yield
+        self.__contiguous_embed_flag = None
 
     def __call__(self, config):
+        log_config('hackwhole-{}-{}-{}'.format(config.hk_loss_based_on,
+                                              config.hk_step_size,
+                                              config.hk_pgd_freq),
+                   log_path=config.workspace,
+                   default_target='cf')
+        for arg in config.kwargs:
+            if arg.startswith('hk'):
+                log(arg, '\t', config.kwargs[arg])
+        log('------------------')
+
         print("Load the models")
         vocab = torch.load(config.vocab)  # type: Vocab
         parser = load_parser(fetch_best_ckpt_name(config.parser_model))
+        self.tagger = PosTagger.load(fetch_best_ckpt_name(config.tagger_model))
 
         self.task = ParserTask(vocab, parser)
-        log_config('whitelog.txt',
-                   log_path=config.workspace,
-                   default_target='cf')
 
         print("Load the dataset")
 
@@ -70,10 +104,21 @@ class HackWhole:
         loader = DataLoader(dataset=dataset,
                             collate_fn=collate_fn)
 
-        def embed_hook(module, grad_in, grad_out):
-            self.vals["embed_grad"] = grad_out[0]
+        def embed_forward_hook(module, input, output):
+            # output_bak = output.clone()
+            # print('before: ', output[0, :, :3])
+            if self.__contiguous_embed_flag:
+                # print('USE CONTIGUOUS')
+                for idx, val in self.contiguous_embed.items():
+                    output[0][idx] = val
+            # print('after: ', output[0, :, :3])
+            # print(output - output_bak)
 
-        parser.embed.register_backward_hook(embed_hook)
+        def embed_backward_hook(module, grad_in, grad_out):
+            ram_write('embed_grad', grad_out[0])
+
+        parser.embed.register_forward_hook(embed_forward_hook)
+        parser.embed.register_backward_hook(embed_backward_hook)
 
         self.embed_searcher = EmbeddingSearcher(
             embed=parser.embed.weight,
@@ -87,195 +132,265 @@ class HackWhole:
         log('dist measure', config.hk_dist_measure)
 
         # batch size == 1
-        for sid, (words, tags, arcs, rels) in enumerate(loader):
-            if sid != 3:
+        for sid, (var_words, tags, arcs, rels) in enumerate(loader):
+            if sid > config.hk_sent_num:
                 continue
 
-            raw_words = words.clone()
-            words_text = vocab.id2word(words[0])
+            raw_words = var_words.clone()
+            words_text = vocab.id2word(var_words[0])
             tags_text = vocab.id2tag(tags[0])
+            _, raw_metric = self.task.evaluate([(raw_words, tags, arcs, rels)])
 
-            log('****** {}: \n\t{}\n\t{}'.format(
-                sid,
-                " ".join(words_text),
-                " ".join(tags_text)
-            ))
+            self.forbidden_idxs = [vocab.unk_index, vocab.pad_index]
+            self.contiguous_embed = {}
+            log('****** {}: \n\t{}\n\t{}'.format(sid, " ".join(words_text), " ".join(tags_text)))
 
-            self.vals['forbidden'] = [vocab.unk_index, vocab.pad_index]
-            for pgdid in range(100):
-                result = self.single_hack(words, tags, arcs, rels,
-                                          dist_measure=config.hk_dist_measure,
-                                          raw_words=raw_words,
-                                          # verbose=pgdid in [0, 99]
-                                          )
+            picker = CherryPicker(lower_is_better=True)
+            picker.add(raw_metric, 'No modification') # iter 0 -> raw
+            for iter_id in range(1, config.hk_steps):
+
+                cgs_flg = iter_id % config.hk_pgd_freq != 0
+                if not cgs_flg:
+                    self.contiguous_embed = {}
+
+                result = self.single_hack(
+                    var_words, tags, arcs, rels,
+                    raw_words=raw_words, raw_metric=raw_metric,
+                    dist_measure=config.hk_dist_measure,
+                    loss_based_on=config.hk_loss_based_on,
+                    cgs_flg=cgs_flg,
+                    step_size=config.hk_step_size,
+                    verbose=False,
+                    iter_id=iter_id
+                )
+                # Fail
+                if result['code'] == 404:
+                    log('Fail in step {}, info {}'.format(iter_id, result['info']))
+                    break
+                # Success
                 if result['code'] == 200:
-                    raw_metrics += result['raw_metric']
-                    attack_metrics += result['attack_metric']
-                    log('attack successfully at step {}'.format(pgdid))
-                    break
-                elif result['code'] == 404:
-                    raw_metrics += result['raw_metric']
-                    attack_metrics += result['raw_metric']
-                    log('attack failed at step {}'.format(pgdid))
-                    break
-                elif result['code'] == 300:
-                    if pgdid == 99:
-                        raw_metrics += result['raw_metric']
-                        attack_metrics += result['raw_metric']
-                        log('attack failed at step {}'.format(pgdid))
-                    else:
-                        words = result['words']
-            log()
-
+                    picker.add(result['attack_metric'], result['info'])
+                    if result['attack_metric'].uas < raw_metric.uas - config.hk_eps:
+                        log('Succeed in step {}'.format(iter_id))
+                        break
+                var_words = result['words']
+            raw_metrics += raw_metric
+            best_iter, best_attack_metric, best_info = picker.select_best_point()
+            attack_metrics += best_attack_metric
+            log('Show result from iter {}'.format(best_iter))
+            log(best_info)
             log('Aggregated result: {} --> {}'.format(raw_metrics, attack_metrics),
                 target='cf')
+            log()
 
-    def single_hack(self,
-                    words, tags, arcs, rels,
-                    raw_words,
-                    target_tags=['NN', 'JJ'],
-                    dist_measure='euc',
-                    verbose=False):
-        vocab = self.task.vocab
-        parser = self.task.model
-        embed = parser.embed.weight
-
-        raw_loss, raw_metric = self.task.evaluate([(raw_words, tags, arcs, rels)])
-
-        # backward the loss
-        parser.zero_grad()
-        mask = words.ne(vocab.pad_index)
+    def backward_loss(self, words, tags, arcs, rels,
+                      cgs_flg,
+                      loss_based_on) -> torch.Tensor:
+        self.parser.zero_grad()
+        mask = words.ne(self.vocab.pad_index)
         mask[:, 0] = 0
-        s_arc, s_rel = parser(words, tags)
+        with self.use_contiguous_embed(cgs_flg):
+            s_arc, s_rel = self.parser(words, tags)
         s_arc, s_rel = s_arc[mask], s_rel[mask]
         gold_arcs, gold_rels = arcs[mask], rels[mask]  # shape like [7,7,7,0,3]
 
-        # max margin loss
-        msk_gold_arc = idx_to_msk(gold_arcs, num_classes=s_arc.size(1))
-        s_gold = s_arc[msk_gold_arc]
-        s_other = s_arc.masked_fill(msk_gold_arc, -1000.)
-        max_s_other, _ = s_other.max(1)
-        margin = s_gold - max_s_other
-        margin[margin < -1] = -1
-        loss = margin.sum()
-        change_penalty = torch.norm(parser.embed(words[0]) - parser.embed(raw_words[0]),
-                                    p=2, dim=1).sum()
-        print(loss.item(), change_penalty.item())
-        loss += change_penalty
-        loss.backward()
+        if loss_based_on == 'logit':
+            # max margin loss
+            msk_gold_arc = idx_to_msk(gold_arcs, num_classes=s_arc.size(1))
+            s_gold = s_arc[msk_gold_arc]
+            s_other = s_arc.masked_fill(msk_gold_arc, -1000.)
+            max_s_other, _ = s_other.max(1)
+            margin = s_gold - max_s_other
+            margin[margin < -1] = -1
+            loss = margin.sum()
+            # with self.use_contiguous_embed(cgs_flg):
+            #     current_embed = parser.embed(words)[0]
+            # raw_embed = parser.embed(raw_words)
+            # change_penalty = torch.norm(current_embed - raw_embed,
+            #                             p=2, dim=1).sum()
+            # print(loss.item(), change_penalty.item())
+            # loss += change_penalty
+            loss.backward()
+        elif loss_based_on == 'prob':
+            # cross entropy loss
+            loss = - self.task.criterion(s_arc, gold_arcs)
+            loss.backward()
+        else:
+            raise Exception
+        return ram_read('embed_grad')
 
-        # # cross entropy loss
-        # loss = - self.task.criterion(s_arc, gold_arcs)
-        # loss.backward()
+    @torch.no_grad()
+    def find_replacement(self, words, word_sid,
+                         changed, must_tag,
+                         dist_measure,
+                         repl_method='tagger') -> (Optional[torch.Tensor], dict):
+        if repl_method == 'tagger':
+            # Pipeline:
+            #    256 minimum dists
+            # -> Filtered by a tagger
+            # -> Smallest one
+            words = words.repeat(128, words.size(1))
+            dists, idxs = self.embed_searcher.find_neighbours(changed, 128,
+                                                              dist_measure, False)
+            for i, ele in enumerate(idxs):
+                words[i][word_sid] = ele
+            self.tagger.eval()
+            s_tags = self.tagger(words)
+            pred_tags = s_tags.argmax(-1)[:, word_sid]
+            new_word_vid = None
+            for i, ele in enumerate(pred_tags):
+                if self.vocab.tags[ele.item()] == must_tag:
+                    new_word_vid = idxs[i]
+                    if new_word_vid.item() not in self.forbidden_idxs:
+                        break
+            return new_word_vid, {"avgd": dists.mean().item(),
+                                  "mind": dists.min().item()}
+        elif repl_method == 'tagdict':
+            # Pipeline:
+            #    All dists
+            # -> Filtered by a tag dict
+            # -> Smallest one
+            # vals, idxs = self.embed_searcher.find_neighbours(changed, 10, 'euc', False)
+            # print("⊥ {:.2f}, - {:.2f}, {} ~ {}, {}, {}".format(
+            #     vals.min().item(), vals.mean().item(),
+            #     *[self.vocab.words[idxs[i].item()] for i in range(4)]))
+            # show_mean_std(embed[word_vid])
+            # show_mean_std(max_grad)
+            dist = {'euc': euc_dist, 'cos': cos_dist}[dist_measure](changed, self.parser.embed.weight)
+            # print('>>> before moving')
+            # self.embed_searcher.find_neighbours(embed[word_vid],10, 'euc', True)
+            # print('>>> after moving')
+            # self.embed_searcher.find_neighbours(changed, 10, 'euc', True)
 
-        grad_norm = self.vals['embed_grad'].norm(dim=2)
+            # Mask illegal words by its POS
+            legal_tag_index = self.tag_filter[must_tag].to(dist.device)
+            legal_tag_mask = dist.new_zeros(dist.size()) \
+                .index_fill_(0, legal_tag_index, 1.).byte()
+            dist.masked_fill_(1 - legal_tag_mask, 1000.)
+            for ele in self.forbidden_idxs:
+                dist[ele] = 1000.
+            new_word_vid = dist.argmin()
+            return new_word_vid, {}
+        elif repl_method == 'bert':
+            # Pipeline:
+            #    Bert select 256 words
+            # -> Filtered by a tagger
+            # -> Smallest one
+            raise NotImplemented
 
-        # Select a word to attack by its POS and norm
+    def single_hack(self,
+                    words, tags, arcs, rels,
+                    raw_words, raw_metric,
+                    target_tags=('NN', 'JJ'),
+                    dist_measure='euc',
+                    loss_based_on='logit',
+                    step_size=5,
+                    cgs_flg=False,
+                    verbose=False,
+                    iter_id=-1):
+        pass
+
+        """
+            Loss back-propagation
+        """
+        embed_grad = self.backward_loss(words, tags, arcs, rels,
+                                        cgs_flg=cgs_flg,
+                                        loss_based_on=loss_based_on)
+
+        """
+            Select and change a word
+        """
+        grad_norm = embed_grad.norm(dim=2)
+
+        # Check if there exists a valid word that can be attack
+        #   - exist: mask invalid positions by POS
+        #   - non exist: return
         exist_target_tag = False
         for i in range(tags.size(1)):
-            if vocab.tags[tags[0][i]] not in target_tags:
+            if self.vocab.tags[tags[0][i]] not in target_tags:
                 grad_norm[0][i] = -(grad_norm[0][i] + 1000)
             else:
                 exist_target_tag = True
         if not exist_target_tag:
-            return {"code": 404,
-                    'raw_metric': raw_metric}
-        word_sid = grad_norm[0].argmax()
-        word_vid = words[0][word_sid]
-        max_grad = self.vals['embed_grad'][0][word_sid]
+            return {"code": 404, "info": "No valid tags"}
 
-        # Forbid the word itself to be selected
-        self.vals['forbidden'].append(word_vid.item())
+        # Select a word and forbid itself
+        word_sid = grad_norm[0].argmax()
+        max_grad = embed_grad[0][word_sid]
+
+        word_vid = words[0][word_sid]
+        if cgs_flg and word_sid.item() in self.contiguous_embed:
+            emb_to_rpl = self.contiguous_embed[word_sid.item()]
+        else:
+            emb_to_rpl = self.parser.embed.weight[word_vid]
+        self.forbidden_idxs.append(word_vid.item())
 
         # Find a word to change
-        if verbose:
-            print(torch.norm(max_grad))
-        # delta = max_grad * 100
-        delta = max_grad / torch.norm(max_grad) * 5
-        changed = embed[word_vid] - delta
+        delta = max_grad / torch.norm(max_grad) * step_size
+        changed = emb_to_rpl - delta
 
-        vals, idxs = self.embed_searcher.find_neighbours(changed, 10, 'euc', False)
-        print("|δ| {:.2f}, ⊥ {:.2f}, - {:.2f}, {} ~ {}, {}, {}".format(
-            delta.norm(),
-            vals.min().item(),
-            vals.mean().item(),
-            vocab.words[word_vid],
-            vocab.words[idxs[1].item()],
-            vocab.words[idxs[2].item()],
-            vocab.words[idxs[3].item()],
-        )
-        )
-        # show_mean_std(embed[word_vid])
-        # show_mean_std(max_grad)
-        dist = {'euc': euc_dist, 'cos': cos_dist}[dist_measure](changed, embed)
-        # print('>>> before moving')
-        # self.embed_searcher.find_neighbours(embed[word_vid],10, 'euc', True)
-        # print('>>> after moving')
-        # self.embed_searcher.find_neighbours(changed, 10, 'euc', True)
+        must_tag = self.vocab.tags[tags[0][word_sid].item()]
+        new_word_vid, repl_info = self.find_replacement(words, word_sid,
+                                                        changed, must_tag,
+                                                        dist_measure, 'tagger')
 
-        must_tag = vocab.tags[tags[0][word_sid].item()]
-        legal_tag_index = self.tag_filter[must_tag].to(dist.device)
-        legal_tag_mask = dist.new_zeros(dist.size()) \
-            .index_fill_(0, legal_tag_index, 1.).byte()
-
-        dist.masked_fill_(1 - legal_tag_mask, 1000.)
-
-        for ele in self.vals['forbidden']:
-            dist[ele] = 1000.
-        word_vid_to_rpl = dist.argmin()
         # A forbidden word maybe chosen if all words are forbidden(1000.)
-        if word_vid_to_rpl.item() in self.vals['forbidden']:
+        if new_word_vid is None or new_word_vid.item() in self.forbidden_idxs:
             log('Attack failed.')
             return {'code': 404,
-                    'raw_metric': raw_metric}
+                    'info': "Selected word are forbidden"}
 
-        # =====================
-        # Evaluating the result
-        # =====================
-        repl_words = words.clone()
-        repl_words[0][word_sid] = word_vid_to_rpl
+        # For contiguous version, the new_word is the projected version.
+        if cgs_flg:
+            self.contiguous_embed[word_sid.item()] = changed
+        new_words = words.clone()
+        new_words[0][word_sid] = new_word_vid
 
-        repl_words_text = [vocab.words[i.item()] for i in repl_words[0]]
-        raw_words_text = [vocab.words[i.item()] for i in raw_words[0]]
-        tags_text = [vocab.tags[i.item()] for i in tags[0]]
+        """
+            Evaluating the result
+        """
+        # print('START EVALUATING')
+        # print([self.vocab.words[ele] for ele in self.forbidden_idxs])
+        loss, metric = self.task.evaluate([(new_words, tags, arcs, rels)])
+
+        def _gen_log_table():
+            new_words_text = [self.vocab.words[i.item()] for i in new_words[0]]
+            raw_words_text = [self.vocab.words[i.item()] for i in raw_words[0]]
+            tags_text = [self.vocab.tags[i.item()] for i in tags[0]]
+            pred_tags, pred_arcs, pred_rels = self.task.predict([(new_words, tags)])
+
+            table = []
+            for i in range(words.size(1)):
+                gold_arc = int(arcs[0][i])
+                pred_arc = 0 if i == 0 else pred_arcs[0][i - 1]
+                table.append([
+                    i,
+                    new_words_text[i],
+                    raw_words_text[i] if raw_words_text[i] != new_words_text[i] else "*",
+                    tags_text[i],
+                    gold_arc,
+                    pred_arc if pred_arc != gold_arc else '*',
+                    grad_norm[0][i].item()
+                ])
+            return table
+
         if verbose:
-            print('After Attacking: \n\t{}\n\t{}'.format(
-                " ".join(repl_words_text), " ".join(tags_text)
-            ))
-        pred_tags, pred_arcs, pred_rels = self.task.predict([(repl_words, tags)])
-        loss, metric = self.task.evaluate([(repl_words, tags, arcs, rels)])
-        table = []
-        for i in range(words.size(1)):
-            gold_arc = int(arcs[0][i])
-            pred_arc = 0 if i == 0 else pred_arcs[0][i - 1]
-            table.append([
-                i,
-                repl_words_text[i],
-                raw_words_text[i] if raw_words_text[i] != repl_words_text[i] else "*",
-                tags_text[i],
-                gold_arc,
-                pred_arc if pred_arc != gold_arc else '*',
-                grad_norm[0][i].item()
-            ])
+            print('$$$$$$$$$$$$$$$$$$$$$$$$$$$')
+            print('Iter {}, cgs_flg={}'.format(iter_id, cgs_flg))
+            # print('After Attacking: \n\t{}\n\t{}'.format(
+            #     " ".join(new_words_text), " ".join(tags_text)))
+            # print('{} --> {}'.format(
+            #     self.vocab.words[word_vid.item()],
+            #     self.vocab.words[new_word_vid.item()]
+            # ))
+            print(tabulate(_gen_log_table(), floatfmt=('.6f')))
+            print('^^^^^^^^^^^^^^^^^^^^^^^^^^^')
 
-        # if verbose:
-        #     print('{} --> {}'.format(
-        #         vocab.words[word_vid.item()],
-        #         vocab.words[word_vid_to_rpl.item()]
-        #     ))
-        #     print(tabulate(table, floatfmt=('.6f')))
-        #     print(metric)
-        #     print('**************************')
-        if metric.uas > raw_metric.uas - 0.1:
-            return {'code': 300,
-                    'words': repl_words,
-                    'raw_metric': raw_metric,
-                    'attack_metric': metric}
+        log('iter {}, pgd {}, uas {:.4f}, mind {:6.3f}, avgd {:6.3f}'.format(
+            iter_id, int(not cgs_flg), metric.uas, repl_info['mind'], repl_info['avgd']))
+        if metric.uas >= raw_metric.uas - .00001:
+            info = 'Nothing'
         else:
-            log(tabulate(table, floatfmt=('.6f')))
-            log('Result {} --> {}'.format(raw_metric.uas, metric.uas),
-                target='cf')
-            return {'code': 200,
-                    'words': repl_words,
-                    'raw_metric': raw_metric,
-                    'attack_metric': metric}
+            info = tabulate(_gen_log_table(), floatfmt='.6f')
+        return {'code': 200, 'words': new_words,
+                'attack_metric': metric, 'info': info}

@@ -111,6 +111,7 @@ class EmbeddingSearcher:
                                 'D-100', 'I-100'],
                        floatfmt='.2f'))
 
+    @torch.no_grad()
     def find_neighbours(self,
                         element: Union[int, str, torch.Tensor],
                         topk=-1,
