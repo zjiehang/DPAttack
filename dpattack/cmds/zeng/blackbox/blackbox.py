@@ -37,10 +37,15 @@ class BlackBoxAttack(Attack):
             # corpus.save(corpus_save_path)
             # print('Result before attacking has saved in {}'.format(corpus_save_path))
 
-            attack_corpus_save_path = '{}/black_{}_{}_{}.conllx'.format(config.result_path,
-                                                                        config.blackbox_method,
-                                                                        config.blackbox_index if config.blackbox_index == 'unk' else config.blackbox_pos_tag,
-                                                                        config.revised_rate)
+            if config.input == 'char':
+                attack_corpus_save_path = '{}/black_typo_{}_{}.conllx'.format(config.result_path,
+                                                                            config.blackbox_index if config.blackbox_index == 'unk' else config.blackbox_pos_tag,
+                                                                            config.revised_rate)
+            else:
+                attack_corpus_save_path = '{}/black_{}_{}_{}.conllx'.format(config.result_path,
+                                                                            config.blackbox_method,
+                                                                            config.blackbox_index if config.blackbox_index == 'unk' else config.blackbox_pos_tag,
+                                                                            config.revised_rate)
             attack_corpus.save(attack_corpus_save_path)
             print('Result after attacking has saved in {}'.format(attack_corpus_save_path))
 

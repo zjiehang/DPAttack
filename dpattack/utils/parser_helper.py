@@ -33,4 +33,4 @@ def is_chars_judger(model, tags = None, chars = None):
     if isinstance(model, CharParser) or isinstance(model, WordCharParser):
         return True if chars is None else chars
     else:
-        return True if tags is None else tags
+        return False if tags is None else tags
