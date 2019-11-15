@@ -19,6 +19,15 @@ from dpattack.libs.luna import log_config, log, fetch_best_ckpt_name, show_mean_
     ram_write, ram_read, TrainingStopObserver, CherryPicker, Aggregator, time
 from dpattack.utils.vocab import Vocab
 
+hack_tags = {
+    "nj": ("NN", "JJ"),
+    "njvr": ('NN', 'JJ', 'VB', 'RB'),
+    "exnjvr": ('NN', 'NNS', 'NNP', 'NNPS',
+               'JJ', 'JJR', 'JJS',
+               'VB', 'VBD', 'VBG', 'VBN', 'VBZ',
+               'RB', 'RBR', 'RBS')
+}
+
 
 def mask_to_small(val):
     if val > 0:
@@ -161,6 +170,7 @@ class HackWhole:
 
                 result = self.single_hack(
                     var_words, tags, arcs, rels,
+                    target_tags=hack_tags[config.hk_tag_type],
                     raw_words=raw_words, raw_metric=raw_metric,
                     dist_measure=config.hk_dist_measure,
                     loss_based_on=config.hk_loss_based_on,
@@ -172,7 +182,7 @@ class HackWhole:
                 )
                 # Fail
                 if result['code'] == 404:
-                    log('Fail in step {}, info: {}'.format(iter_id, result['info']))
+                    log('Stop in step {}, info: {}'.format(iter_id, result['info']))
                     break
                 # Success
                 if result['code'] == 200:
