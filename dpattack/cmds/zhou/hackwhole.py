@@ -21,6 +21,7 @@ from dpattack.utils.vocab import Vocab
 
 hack_tags = {
     "nj": ("NN", "JJ"),
+    "njr": ("NN", "JJ", "RB"),
     "njvr": ('NN', 'JJ', 'VB', 'RB'),
     "exnjvr": ('NN', 'NNS', 'NNP', 'NNPS',
                'JJ', 'JJR', 'JJS',
@@ -151,15 +152,18 @@ class HackWhole:
             raw_words = var_words.clone()
             words_text = vocab.id2word(var_words[0])
             tags_text = vocab.id2tag(tags[0])
-            _, raw_metric = self.task.evaluate([(raw_words, tags, None, arcs, rels)])
+            _, raw_metric = self.task.evaluate(
+                [(raw_words, tags, None, arcs, rels)])
 
             self.forbidden_idxs = [vocab.unk_index, vocab.pad_index]
             self.contiguous_embed = {}
             self.change_positions = set()
-            log('****** {}: \n{}\n{}'.format(sid, " ".join(words_text), " ".join(tags_text)))
+            log('****** {}: \n{}\n{}'.format(sid,
+                                             " ".join(words_text), " ".join(tags_text)))
 
             picker = CherryPicker(lower_is_better=True)
-            picker.add(raw_metric, 'No modification to the raw sentence')  # iter 0 -> raw
+            # iter 0 -> raw
+            picker.add(raw_metric, 'No modification to the raw sentence')
 
             t0 = time.time()
             for iter_id in range(1, config.hk_steps):
@@ -182,7 +186,8 @@ class HackWhole:
                 )
                 # Fail
                 if result['code'] == 404:
-                    log('Stop in step {}, info: {}'.format(iter_id, result['info']))
+                    log('Stop in step {}, info: {}'.format(
+                        iter_id, result['info']))
                     break
                 # Success
                 if result['code'] == 200:
@@ -204,11 +209,12 @@ class HackWhole:
                 'iters(avg) {:.1f}, time(avg) {:.1f}s, '
                 'fail rate {:.2f}, best_iter(avg) {:.1f}, best_iter(std) {:.1f}, '
                 'changed(avg) {:.1f}'.format(
-                raw_metrics, attack_metrics,
-                agg.mean('iters'), agg.mean('time'),
-                agg.mean('fail'), agg.mean('best_iter'), agg.std('best_iter'),
-                agg.mean('changed')
-            ))
+                    raw_metrics, attack_metrics,
+                    agg.mean('iters'), agg.mean('time'),
+                    agg.mean('fail'), agg.mean(
+                        'best_iter'), agg.std('best_iter'),
+                    agg.mean('changed')
+                ))
             log()
 
     def backward_loss(self, words, tags, arcs, rels,
@@ -284,7 +290,8 @@ class HackWhole:
             #     *[self.vocab.words[idxs[i].item()] for i in range(4)]))
             # show_mean_std(embed[word_vid])
             # show_mean_std(max_grad)
-            dist = {'euc': euc_dist, 'cos': cos_dist}[dist_measure](changed, self.parser.embed.weight)
+            dist = {'euc': euc_dist, 'cos': cos_dist}[
+                dist_measure](changed, self.parser.embed.weight)
             # print('>>> before moving')
             # self.embed_searcher.find_neighbours(embed[word_vid],10, 'euc', True)
             # print('>>> after moving')
@@ -325,6 +332,12 @@ class HackWhole:
         embed_grad = self.backward_loss(words, tags, arcs, rels,
                                         cgs_flg=cgs_flg,
                                         loss_based_on=loss_based_on)
+        # Sometimes the loss/grad will be zero.
+        # Especially in the case of applying pgd_freq>1 to small sentences:
+        # e.g., the uas of projected version may be 83.33%
+        # while under the case of the unprojected version, the loss is 0.
+        if torch.sum(embed_grad) == 0.0:
+            return {"code": 404, "info": "Loss is already zero."}
 
         """
             Select and change a word
@@ -387,13 +400,15 @@ class HackWhole:
         """
         # print('START EVALUATING')
         # print([self.vocab.words[ele] for ele in self.forbidden_idxs])
-        loss, metric = self.task.evaluate([(new_words, tags, None, arcs, rels)])
+        loss, metric = self.task.evaluate(
+            [(new_words, tags, None, arcs, rels)])
 
         def _gen_log_table():
             new_words_text = [self.vocab.words[i.item()] for i in new_words[0]]
             raw_words_text = [self.vocab.words[i.item()] for i in raw_words[0]]
             tags_text = [self.vocab.tags[i.item()] for i in tags[0]]
-            pred_tags, pred_arcs, pred_rels = self.task.predict([(new_words, tags, None)])
+            pred_tags, pred_arcs, pred_rels = self.task.predict(
+                [(new_words, tags, None)])
 
             table = []
             for i in range(sent_len):
