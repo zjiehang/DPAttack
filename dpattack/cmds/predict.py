@@ -31,6 +31,6 @@ class Predict(object):
         print("Make predictions on the dataset")
         corpus.tags, corpus.heads, corpus.rels = task.predict(loader, tagger)
 
-        saved_path = '{}/raw_result_{}_tag.conllx'.format(config.result_path,'pred' if config.pred_tag else 'gold')
+        saved_path = '{}/raw_result.conllx'.format(config.result_path)
         print(f"Save the predicted result to {saved_path}")
         corpus.save(saved_path)

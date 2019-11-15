@@ -10,9 +10,9 @@ visual_method = 'unk'
 random_number = 100
 
 config = Config('../../config.ini')
-gold = Corpus.load_parser(config.fdata)
-origin = Corpus.load_parser("{}/{}".format(config.result_path, 'origin.conllx'))
-attacked = Corpus.load_parser("{}/black_{}_0.01.conllx".format(config.result_path, visual_method))
+gold = Corpus.load(config.fdata)
+origin = Corpus.load("{}/{}".format(config.result_path, 'raw_result.conllx'))
+attacked = Corpus.load("{}/black_substitute_{}_0.1.conllx".format(config.result_path, visual_method))
 attacked_index = []
 for index, (origin_sen, attack_sen) in enumerate(zip(origin.sentences,attacked.sentences)):
     origin_sentence = [word.lower() for word in origin_sen.FORM]
@@ -21,7 +21,7 @@ for index, (origin_sen, attack_sen) in enumerate(zip(origin.sentences,attacked.s
         attacked_index.append(index)
 print(len(attacked_index))
 
-random_index = np.random.choice(attacked_index, random_number)
+random_index = np.random.choice(attacked_index, random_number, replace=False)
 def to_svg(sent: Sentence):
     doc = {
         "words": [],

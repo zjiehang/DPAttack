@@ -1,7 +1,7 @@
 import logging
 logging.basicConfig(level=logging.ERROR)
 from dpattack.cmds.zeng.attack import Attack
-from dpattack.cmds.zeng.blackbox.blackboxmethod import Substituting, Inserting, Deleting,CharTypo
+from dpattack.cmds.zeng.blackbox.blackboxmethod import Substituting, Inserting, Deleting, CharTypo, InsertingPunct, DeletingPunct
 from dpattack.utils.corpus import Corpus,init_sentence
 from dpattack.utils.metric import ParserMetric as Metric
 from dpattack.libs.luna.pytorch import cast_list
@@ -36,31 +36,38 @@ class BlackBoxAttack(Attack):
             # corpus_save_path = '{}/{}'.format(config.result_path,'origin.conllx')
             # corpus.save(corpus_save_path)
             # print('Result before attacking has saved in {}'.format(corpus_save_path))
+            attack_corpus_save_path = self.get_attack_corpus_saving_path(config)
+            attack_corpus.save(attack_corpus_save_path)
+            print('Result after attacking has saved in {}'.format(attack_corpus_save_path))
 
-            if config.input == 'char':
-                attack_corpus_save_path = '{}/black_typo_{}_{}.conllx'.format(config.result_path,
-                                                                            config.blackbox_index if config.blackbox_index == 'unk' else config.blackbox_pos_tag,
-                                                                            config.revised_rate)
-            else:
+    def get_attack_corpus_saving_path(self, config):
+        if config.input == 'char':
+            attack_corpus_save_path = '{}/black_typo_{}_{}.conllx'.format(config.result_path,
+                                                                          config.blackbox_index if config.blackbox_index == 'unk' else config.blackbox_pos_tag,
+                                                                          config.revised_rate)
+        else:
+            if config.blackbox_method == 'substitute':
                 attack_corpus_save_path = '{}/black_{}_{}_{}.conllx'.format(config.result_path,
                                                                             config.blackbox_method,
                                                                             config.blackbox_index if config.blackbox_index == 'unk' else config.blackbox_pos_tag,
                                                                             config.revised_rate)
-            attack_corpus.save(attack_corpus_save_path)
-            print('Result after attacking has saved in {}'.format(attack_corpus_save_path))
+            else:
+                attack_corpus_save_path = '{}/black_{}.conllx'.format(config.result_path,
+                                                                        config.blackbox_method)
+        return attack_corpus_save_path
 
     def get_attack_seq_generator(self, config):
         method = config.blackbox_method
         input_type = config.input
         if input_type == 'char':
-            return CharTypo(config, self.vocab, self.tagger, self.ROOT_TAG, parser = self.parser)
+            return CharTypo(config, self.vocab, parser=self.parser)
         else:
             if method == 'insert':
-                return Inserting(config, self.vocab, self.tagger, self.ROOT_TAG)
+                return InsertingPunct(config, self.vocab)
             elif method == 'substitute':
                 return Substituting(config, self.vocab, self.tagger, self.ROOT_TAG, parser=self.parser)
             elif method == 'delete':
-                return Deleting(config, self.vocab, self.tagger, self.ROOT_TAG)
+                return DeletingPunct(config, self.vocab)
 
     def attack_for_each_process(self, config, loader, attack_corpus):
         #recode revised_number for all sentences

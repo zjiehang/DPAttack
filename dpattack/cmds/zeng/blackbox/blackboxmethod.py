@@ -6,9 +6,7 @@ from dpattack.utils.aug import CharTypoAug
 
 
 class BlackBoxMethod(object):
-    def __init__(self, tagger, vocab, ROOT_TAG):
-        self.tagger = tagger
-        self.ROOT_TAG = ROOT_TAG
+    def __init__(self, vocab):
         self.vocab = vocab
 
         self.FALSE_TOKEN = -1
@@ -48,7 +46,9 @@ class BlackBoxMethod(object):
 
 class Substituting(BlackBoxMethod):
     def __init__(self, config, vocab, tagger, ROOT_TAG, parser=None):
-        super(Substituting, self).__init__(tagger, vocab, ROOT_TAG)
+        super(Substituting, self).__init__(vocab)
+        self.tagger = tagger
+        self.ROOT_TAG = ROOT_TAG
         self.index = self.get_index(config, vocab, parser)
         self.aug = get_blackbox_augmentor(config.blackbox_model, config.path, config.revised_rate, vocab=vocab, ftrain=config.ftrain)
 
@@ -113,7 +113,9 @@ class Substituting(BlackBoxMethod):
 
 class Inserting(BlackBoxMethod):
     def __init__(self, config, vocab, tagger, ROOT_TAG):
-        super(Inserting, self).__init__(tagger, vocab, ROOT_TAG)
+        super(Inserting, self).__init__(vocab)
+        self.tagger = tagger
+        self.ROOT_TAG = ROOT_TAG
         self.index = AttackIndexInserting(config)
         self.aug = get_blackbox_augmentor(config.blackbox_model, config.path, config.revised_rate, vocab=vocab,ftrain=config.ftrain)
 
@@ -234,15 +236,42 @@ class Inserting(BlackBoxMethod):
             rels_in_list.insert(CONSTANT.JJ_REL_MODIFIER if tags[revised].startswith(CONSTANT.ADJ_TAG) else CONSTANT.RB_REL_MODIFIER,revised)
         return self.vocab.rel2id(rels_in_list)
 
-    #
-    # def update_mask_arc_rel(self, mask, arc, rel, revised_list):
-    #     return self.insert_list_to_tensor(mask, revised_list), \
-    #            self.insert_list_to_tensor(arc, revised_list), \
-    #           self.insert_list_to_tensor(rel, revised_list)
+
+class InsertingPunct(BlackBoxMethod):
+    def __init__(self, config, vocab):
+        super(InsertingPunct, self).__init__(vocab)
+
+        self.index = AttackIndexInsertingPunct(config, vocab)
+
+    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs))
+
+        attack_index.sort(reverse=True)
+        attack_mask = cast_list(mask)
+        attack_arcs = cast_list(arcs)
+        attack_rels = cast_list(rels)
+        attack_seqs = self.copy_str_to_list(seqs)
+
+        for index in attack_index:
+            attack_seqs.insert(index, CONSTANT.COMMA)
+            attack_mask.insert(index + 1, 0)
+            attack_rels.insert(index + 1, 0)
+            attack_arcs.insert(index + 1, 0)
+            attack_arcs = [arc + 1 if arc > index else arc for arc in attack_arcs]
+
+        attack_mask = torch.tensor(attack_mask, dtype=mask.dtype)
+        attack_arcs = torch.tensor(attack_arcs, dtype=arcs.dtype)
+        attack_rels = torch.tensor(attack_rels, dtype=rels.dtype)
+        attack_mask, attack_arcs, attack_rels = map(lambda x: x.unsqueeze(0) if len(x.shape) == 1 else x,
+                                                            [attack_mask, attack_arcs, attack_rels])
+        attack_mask, attack_arcs, attack_rels = map(lambda x: x.cuda() if torch.cuda.is_available() else x,
+                                                            [attack_mask, attack_arcs, attack_rels])
+        return [Corpus.ROOT] + attack_seqs, attack_mask, attack_arcs, attack_rels, len(attack_index)
+
 
 class Deleting(BlackBoxMethod):
-    def __init__(self, config, vocab, tagger, ROOT_TAG):
-        super(Deleting, self).__init__(tagger, vocab, ROOT_TAG)
+    def __init__(self, config, vocab):
+        super(Deleting, self).__init__(vocab)
         self.index = AttackIndexDeleting(config)
 
     def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
@@ -273,9 +302,42 @@ class Deleting(BlackBoxMethod):
         return attack_seq, attack_mask, attack_gold_arc, attack_gold_rel, len(attack_index)
 
 
+class DeletingPunct(BlackBoxMethod):
+    def __init__(self, config, vocab):
+        super(DeletingPunct, self).__init__(vocab)
+
+        self.index = AttackIndexDeletingPunct(config, vocab)
+
+    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
+        gold_arcs = cast_list(arcs)
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), gold_arcs)
+
+        attack_index.sort(reverse=True)
+        attack_mask = cast_list(mask)
+        attack_arcs = gold_arcs.copy()
+        attack_rels = cast_list(rels)
+        attack_seqs = self.copy_str_to_list(seqs)
+
+        for index in attack_index:
+            del attack_seqs[index]
+            del attack_mask[index + 1]
+            del attack_arcs[index + 1]
+            del attack_rels[index + 1]
+            attack_arcs = [arc - 1 if arc > index else arc for arc in attack_arcs]
+
+        attack_mask = torch.tensor(attack_mask, dtype=mask.dtype)
+        attack_arcs = torch.tensor(attack_arcs, dtype=arcs.dtype)
+        attack_rels = torch.tensor(attack_rels, dtype=rels.dtype)
+        attack_mask, attack_arcs, attack_rels = map(lambda x: x.unsqueeze(0) if len(x.shape) == 1 else x,
+                                                            [attack_mask, attack_arcs, attack_rels])
+        attack_mask, attack_arcs, attack_rels = map(lambda x: x.cuda() if torch.cuda.is_available() else x,
+                                                            [attack_mask, attack_arcs, attack_rels])
+        return [Corpus.ROOT] + attack_seqs, attack_mask, attack_arcs, attack_rels, len(attack_index)
+
+
 class CharTypo(BlackBoxMethod):
-    def __init__(self, config, vocab, tagger, ROOT_TAG, parser=None):
-        super(CharTypo,self).__init__(tagger, vocab, ROOT_TAG)
+    def __init__(self, config, vocab, parser=None):
+        super(CharTypo,self).__init__(vocab)
         self.index = self.get_index(config, vocab, parser)
         self.aug = CharTypoAug(vocab.char_dict)
 

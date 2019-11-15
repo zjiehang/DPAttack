@@ -10,6 +10,9 @@ import numpy as np
 from dpattack.cmds.zeng.blackbox.constant import CONSTANT
 from dpattack.utils.parser_helper import is_chars_judger
 from dpattack.libs.luna.pytorch import cast_list
+from dpattack.models.char import CharParser
+from pytorch_pretrained_bert import BertTokenizer,BertForMaskedLM
+
 
 class AttackIndex(object):
     def __init__(self, config):
@@ -119,7 +122,10 @@ class AttackIndexUnkReplacement(AttackIndex):
         non_equal_numbers = self.calculate_non_equal_numbers(pred_arc[:,mask.squeeze(0)], arcs[mask])
         sorted_index = sorted(range(length), key=lambda k: non_equal_numbers[k], reverse=True)
         number = self.get_number(self.revised_rate, length)
-        return [index_to_be_replace[index] - 1 for index in sorted_index[:number]]
+        if isinstance(self.parser, CharParser):
+            return [index_to_be_replace[index] - 1 for index in sorted_index[:number]]
+        else:
+            return self.get_index_to_be_attacked(sorted_index,tags,index_to_be_replace,number)
 
     def generate_unk_seqs(self, seq, length, index_to_be_replace):
         '''
@@ -164,6 +170,15 @@ class AttackIndexUnkReplacement(AttackIndex):
         if torch.cuda.is_available():
             unk_chars = unk_chars.cuda()
         return unk_chars
+    
+    def get_index_to_be_attacked(self, sorted_index,tags,index_to_be_replace,number):
+        attacked_list = []
+        for index in sorted_index:
+            if tags[index_to_be_replace[index]] in CONSTANT.REAL_WORD_TAGS:
+                attacked_list.append(index_to_be_replace[index] - 1)
+                if len(attacked_list) >= number:
+                    break
+        return attacked_list
 
 class AttackIndexPosTag(AttackIndex):
     def __init__(self, config):
@@ -173,3 +188,105 @@ class AttackIndexPosTag(AttackIndex):
     def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
         index = [index - 1 for index, tag in enumerate(tags) if tag.startswith(self.pos_tag)]
         return self.get_random_index_by_length_rate(index, self.revised_rate, len(tags))
+
+
+class AttackIndexInsertingPunct(AttackIndex):
+    def __init__(self, config, vocab):
+        super(AttackIndexInsertingPunct, self).__init__(config)
+
+        self.bertMaskedLM = BertForMaskedLM.from_pretrained(config.path)
+        self.tokenizer = BertTokenizer.from_pretrained(config.path)
+        self.bertMaskedLM.eval()
+        if torch.cuda.is_available():
+            self.bertMaskedLM = self.bertMaskedLM.cuda()
+        self.loss_fct = torch.nn.CrossEntropyLoss()
+        self.vocab = vocab
+        self.puncts = self.vocab.id2word(self.vocab.puncts)
+
+    def get_language_model_score(self, sentences):
+        tensor_sentence_list = []
+        for sentence in sentences:
+            tokenize_input = self.tokenizer.tokenize(sentence)
+            tensor_sentence_list.append(torch.tensor([self.tokenizer.convert_tokens_to_ids(tokenize_input)]))
+        tensor_input = torch.cat(tensor_sentence_list,dim=0)
+        if torch.cuda.is_available():
+            tensor_input = tensor_input.cuda()
+        predictions = self.bertMaskedLM(tensor_input)
+        loss = [None] * len(sentences)
+        for i in range(len(sentences)):
+            loss[i] = math.exp(self.loss_fct(predictions[i].squeeze(), tensor_input[i].squeeze()).data)
+        return loss
+
+    def get_attack_index(self, seqs):
+        comma_insert_index, comma_insert_seqs = self.duplicate_sentence_with_comma_insertion(seqs, len(seqs))
+        if len(comma_insert_index) == 0:
+            return []
+        seq_scores = self.get_language_model_score(comma_insert_seqs)
+        sorted_index = sorted(range(len(seq_scores)), key=lambda k: seq_scores[k], reverse=True)
+        number = self.get_number(self.revised_rate, len(seqs))
+        return [comma_insert_index[index] for index in sorted_index[:number]]
+
+    def duplicate_sentence_with_comma_insertion(self, seqs, length):
+        duplicate_seqs_list = []
+        comma_insert_index = []
+        for index in range(1, length):
+            if seqs[index] not in self.puncts and seqs[index - 1] not in self.puncts:
+                duplicate_seqs = seqs.copy()
+                duplicate_seqs.insert(index, CONSTANT.COMMA)
+                duplicate_seqs_list.append(duplicate_seqs)
+                comma_insert_index.append(index)
+        return comma_insert_index, [' '.join(seq) for seq in duplicate_seqs_list]
+
+
+class AttackIndexDeletingPunct(AttackIndex):
+    def __init__(self, config, vocab):
+        super(AttackIndexDeletingPunct, self).__init__(config)
+
+        self.bertMaskedLM = BertForMaskedLM.from_pretrained(config.path)
+        self.tokenizer = BertTokenizer.from_pretrained(config.path)
+        self.bertMaskedLM.eval()
+        if torch.cuda.is_available():
+            self.bertMaskedLM = self.bertMaskedLM.cuda()
+        self.loss_fct = torch.nn.CrossEntropyLoss()
+        self.vocab = vocab
+        self.puncts = self.vocab.id2word(self.vocab.puncts)
+
+    def get_language_model_score(self, sentences):
+        loss = [None] * len(sentences)
+        for index, sentence in enumerate(sentences):
+            tokenize_input = self.tokenizer.tokenize(sentence)
+            tensor_input = torch.tensor([self.tokenizer.convert_tokens_to_ids(tokenize_input)])
+            if torch.cuda.is_available():
+                tensor_input = tensor_input.cuda()
+            predictions = self.bertMaskedLM(tensor_input)
+            loss[index] = math.exp(self.loss_fct(predictions.squeeze(), tensor_input.squeeze()).data)
+
+        return loss
+
+    def get_attack_index(self, seqs, arcs):
+        comma_insert_index, comma_insert_seqs = self.duplicate_sentence_with_comma_insertion(seqs, len(seqs), arcs)
+        if len(comma_insert_index) == 0:
+            return []
+        seq_scores = self.get_language_model_score(comma_insert_seqs)
+        sorted_index = sorted(range(len(seq_scores)), key=lambda k: seq_scores[k], reverse=True)
+        number = self.get_number(self.revised_rate, len(seqs))
+        return [comma_insert_index[index] for index in sorted_index[:number]]
+
+    def duplicate_sentence_with_comma_insertion(self, seqs, length, arcs):
+        duplicate_seqs_list = []
+        punct_delete_index = []
+        for index in range(length - 1):
+            if seqs[index] in self.puncts:
+                if self.check_arcs(index, arcs):
+                    duplicate_seqs = seqs.copy()
+                    del duplicate_seqs[index]
+                    duplicate_seqs_list.append(duplicate_seqs)
+                    punct_delete_index.append(index)
+        return punct_delete_index, [' '.join(seq) for seq in duplicate_seqs_list]
+
+    def check_arcs(self, index, arcs):
+        target_index = index + 1
+        for arc in arcs:
+            if target_index == arc:
+                return False
+        return True

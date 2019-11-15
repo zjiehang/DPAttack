@@ -9,3 +9,9 @@ class CONSTANT(object):
     JJ_REL_MODIFIER = 'amod'
     RB_REL_MODIFIER = 'advmod'
 
+    REAL_WORD_TAGS = ['JJ','JJR','JJS',
+                      'NN','NNS','NNP','NNPS',
+                      'VB','VBD','VBG','VBN','VBP','VBZ',
+                      'Rb','RBR','RBS']
+
+    COMMA = ','
