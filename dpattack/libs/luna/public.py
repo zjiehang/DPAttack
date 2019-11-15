@@ -296,6 +296,7 @@ class CherryPicker:
         self.history_values.append(value)
 
     def select_best_point(self):
+        # np.argmin selects the first occurrence of the min
         if self.lower_is_better:
             chosen_id = int(np.argmin(self.history_values))
         else:
@@ -372,21 +373,23 @@ def cast_list(array):
         return array.squeeze().tolist()
 
 
-class Collector:
+class Aggregator:
     def __init__(self):
         self.has_key = False
         self.keys = None
         self.saved = None
 
-    def collect(self, *args):
+    def aggregate(self, *args):
         # First called, init the collector and decide the key mode
         if self.saved is None:
-            if Collector.__arg_has_key(*args):
+            if Aggregator.__arg_has_key(*args):
                 self.has_key = True
                 self.keys = list(map(lambda x: x[0], args))
+            # else:
+            #     self.keys = ['__{}' for i in range(len(args))]
             self.saved = [[] for _ in range(len(args))]
         # Later called
-        if Collector.__arg_has_key(*args) != self.has_key:
+        if Aggregator.__arg_has_key(*args) != self.has_key:
             raise Exception("you must always specify a key or not")
         for i in range(len(args)):
             if self.has_key:
@@ -413,19 +416,44 @@ class Collector:
             return False
         raise Exception("you must specify a key for all args or not")
 
-    def collected(self, key=None):
+    def mean(self, key):
+        return self.aggregated(key, 'mean')
+
+    def std(self, key):
+        return self.aggregated(key, 'std')
+
+    def sum(self, key):
+        return self.aggregated(key, 'sum')
+
+    def list(self, key):
+        return self.aggregated(key)
+
+    def aggregated(self, key='no', reduce: Union[str, callable]= 'no'):
+        if reduce == 'no':
+            reduce_fn = lambda x: x
+        elif reduce == 'mean':
+            reduce_fn = np.mean
+        elif reduce == 'sum':
+            reduce_fn = np.sum
+        elif reduce == 'std':
+            reduce_fn = np.std
+        elif isinstance(reduce, callable):
+            reduce_fn =reduce
+        else:
+            raise Exception('reduce must be None, mean, sum, std or a function.')
+
         if key is None:
             if not self.has_key:
                 if len(self.saved) == 1:
-                    return self.saved[0]
+                    return reduce_fn(self.saved[0])
                 else:
-                    return tuple(self.saved)
+                    return tuple(reduce_fn(x) for x in self.saved)
             else:
                 raise Exception("you must specify a key")
         elif key is not None:
             if self.has_key:
                 saved_id = self.keys.index(key)
-                return self.saved[saved_id]
+                return reduce_fn(self.saved[saved_id])
             else:
                 raise Exception("you cannot specify a key")
 

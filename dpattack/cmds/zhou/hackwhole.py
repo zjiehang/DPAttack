@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import math
 from contextlib import contextmanager
 from typing import Union, Optional
 
@@ -15,7 +16,7 @@ from tabulate import tabulate
 import torch
 from collections import defaultdict
 from dpattack.libs.luna import log_config, log, fetch_best_ckpt_name, show_mean_std, idx_to_msk, cast_list, as_table, \
-    ram_write, ram_read, TrainingStopObserver, CherryPicker
+    ram_write, ram_read, TrainingStopObserver, CherryPicker, Aggregator, time
 from dpattack.utils.vocab import Vocab
 
 
@@ -78,8 +79,8 @@ class HackWhole:
 
     def __call__(self, config):
         log_config('hackwhole-{}-{}-{}'.format(config.hk_loss_based_on,
-                                              config.hk_step_size,
-                                              config.hk_pgd_freq),
+                                               config.hk_step_size,
+                                               config.hk_pgd_freq),
                    log_path=config.workspace,
                    default_target='cf')
         for arg in config.kwargs:
@@ -130,9 +131,11 @@ class HackWhole:
         attack_metrics = ParserMetric()
 
         log('dist measure', config.hk_dist_measure)
-
+        agg = Aggregator()
         # batch size == 1
         for sid, (var_words, tags, chars, arcs, rels) in enumerate(loader):
+            # if sid in [1, 2]:
+            #     continue
             if sid > config.hk_sent_num:
                 continue
 
@@ -143,10 +146,13 @@ class HackWhole:
 
             self.forbidden_idxs = [vocab.unk_index, vocab.pad_index]
             self.contiguous_embed = {}
-            log('****** {}: \n\t{}\n\t{}'.format(sid, " ".join(words_text), " ".join(tags_text)))
+            self.change_positions = set()
+            log('****** {}: \n{}\n{}'.format(sid, " ".join(words_text), " ".join(tags_text)))
 
             picker = CherryPicker(lower_is_better=True)
-            picker.add(raw_metric, 'No modification') # iter 0 -> raw
+            picker.add(raw_metric, 'No modification to the raw sentence')  # iter 0 -> raw
+
+            t0 = time.time()
             for iter_id in range(1, config.hk_steps):
 
                 cgs_flg = iter_id % config.hk_pgd_freq != 0
@@ -161,11 +167,12 @@ class HackWhole:
                     cgs_flg=cgs_flg,
                     step_size=config.hk_step_size,
                     verbose=False,
+                    max_change_num=config.hk_max_change,
                     iter_id=iter_id
                 )
                 # Fail
                 if result['code'] == 404:
-                    log('Fail in step {}, info {}'.format(iter_id, result['info']))
+                    log('Fail in step {}, info: {}'.format(iter_id, result['info']))
                     break
                 # Success
                 if result['code'] == 200:
@@ -174,13 +181,24 @@ class HackWhole:
                         log('Succeed in step {}'.format(iter_id))
                         break
                 var_words = result['words']
+            t1 = time.time()
             raw_metrics += raw_metric
             best_iter, best_attack_metric, best_info = picker.select_best_point()
             attack_metrics += best_attack_metric
-            log('Show result from iter {}'.format(best_iter))
+            agg.aggregate(("iters", iter_id), ("time", t1 - t0),
+                          ("fail", abs(best_attack_metric.uas - raw_metric.uas) < 1e-4),
+                          ('best_iter', best_iter), ("changed", len(self.change_positions)))
+            log('Show result from iter {}:'.format(best_iter))
             log(best_info)
-            log('Aggregated result: {} --> {}'.format(raw_metrics, attack_metrics),
-                target='cf')
+            log('Aggregated result: {} --> {}, '
+                'iters(avg) {:.1f}, time(avg) {:.1f}s, '
+                'fail rate {:.2f}, best_iter(avg) {:.1f}, best_iter(std) {:.1f}, '
+                'changed(avg) {:.1f}'.format(
+                raw_metrics, attack_metrics,
+                agg.mean('iters'), agg.mean('time'),
+                agg.mean('fail'), agg.mean('best_iter'), agg.std('best_iter'),
+                agg.mean('changed')
+            ))
             log()
 
     def backward_loss(self, words, tags, arcs, rels,
@@ -287,8 +305,9 @@ class HackWhole:
                     step_size=5,
                     cgs_flg=False,
                     verbose=False,
+                    max_change_num=1,
                     iter_id=-1):
-        pass
+        sent_len = words.size(1)
 
         """
             Loss back-propagation
@@ -302,17 +321,22 @@ class HackWhole:
         """
         grad_norm = embed_grad.norm(dim=2)
 
-        # Check if there exists a valid word that can be attack
-        #   - exist: mask invalid positions by POS
-        #   - non exist: return
-        exist_target_tag = False
-        for i in range(tags.size(1)):
+        position_mask = [False for _ in range(words.size(1))]
+        # Mask some positions by POS
+        for i in range(sent_len):
             if self.vocab.tags[tags[0][i]] not in target_tags:
+                position_mask[i] = True
+        # Check if the number of changed words exceeds the max value
+        if len(self.change_positions) >= max_change_num:
+            for i in range(sent_len):
+                if i not in self.change_positions:
+                    position_mask[i] = True
+        if all(position_mask):
+            return {"code": 404, "info": "No valid word to replace"}
+
+        for i in range(sent_len):
+            if position_mask[i]:
                 grad_norm[0][i] = -(grad_norm[0][i] + 1000)
-            else:
-                exist_target_tag = True
-        if not exist_target_tag:
-            return {"code": 404, "info": "No valid tags"}
 
         # Select a word and forbid itself
         word_sid = grad_norm[0].argmax()
@@ -324,6 +348,8 @@ class HackWhole:
         else:
             emb_to_rpl = self.parser.embed.weight[word_vid]
         self.forbidden_idxs.append(word_vid.item())
+        self.change_positions.add(word_sid.item())
+        # print(self.change_positions)
 
         # Find a word to change
         delta = max_grad / torch.norm(max_grad) * step_size
@@ -360,7 +386,7 @@ class HackWhole:
             pred_tags, pred_arcs, pred_rels = self.task.predict([(new_words, tags, None)])
 
             table = []
-            for i in range(words.size(1)):
+            for i in range(sent_len):
                 gold_arc = int(arcs[0][i])
                 pred_arc = 0 if i == 0 else pred_arcs[0][i - 1]
                 table.append([
