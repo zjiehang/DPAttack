@@ -18,16 +18,28 @@ from collections import defaultdict
 from dpattack.libs.luna import log_config, log, fetch_best_ckpt_name, show_mean_std, idx_to_msk, cast_list, as_table, \
     ram_write, ram_read, TrainingStopObserver, CherryPicker, Aggregator, time
 from dpattack.utils.vocab import Vocab
+from dpattack.libs.luna import create_folder_for_file
 
-hack_tags = {
-    "nj": ("NN", "JJ"),
-    "njr": ("NN", "JJ", "RB"),
-    "njvr": ('NN', 'JJ', 'VB', 'RB'),
-    "exnjvr": ('NN', 'NNS', 'NNP', 'NNPS',
-               'JJ', 'JJR', 'JJS',
-               'VB', 'VBD', 'VBG', 'VBN', 'VBZ',
-               'RB', 'RBR', 'RBS')
-}
+
+class _Tags:
+
+    def __getitem__(self, k):
+        assert k
+        ret = []
+        if 'n' in k:
+            ret += ['NN', 'NNS', 'NNP', 'NNPS']
+        if 'j' in k:
+            ret += ['JJ', 'JJR', 'JJS']
+        if 'v' in k:
+            ret += ['VB', 'VBD', 'VBG', 'VBN', 'VBZ', 'VBP']
+        if 'i' in k:
+            ret += ['i']
+        if 'r' in k:
+            ret += ['RB', 'RBR', 'RBS']
+        return tuple(ret)
+
+
+hack_tags = _Tags()
 
 
 def mask_to_small(val):
@@ -93,6 +105,8 @@ class HackWhole:
                                                config.hk_pgd_freq),
                    log_path=config.workspace,
                    default_target='cf')
+        create_folder_for_file(config.hk_output_path)
+        fout = open(config.hk_output_path, "w")
         for arg in config.kwargs:
             if arg.startswith('hk'):
                 log(arg, '\t', config.kwargs[arg])
@@ -143,6 +157,7 @@ class HackWhole:
         log('dist measure', config.hk_dist_measure)
         agg = Aggregator()
         # batch size == 1
+        # HIGHLIGHT: SENTENCE
         for sid, (var_words, tags, chars, arcs, rels) in enumerate(loader):
             # if sid in [1, 2]:
             #     continue
@@ -166,11 +181,19 @@ class HackWhole:
             picker.add(raw_metric, 'No modification to the raw sentence')
 
             t0 = time.time()
+            # HIGHLIGHT: ITERATION
             for iter_id in range(1, config.hk_steps):
 
                 cgs_flg = iter_id % config.hk_pgd_freq != 0
                 if not cgs_flg:
                     self.contiguous_embed = {}
+
+                if isinstance(config.hk_max_change, int):
+                    max_change_num = config.hk_max_change
+                elif isinstance(config.hk_max_change, float):
+                    max_change_num = int(config.hk_max_change * raw_words.size(1))
+                else:
+                    raise Exception("hk_max_change must be a float or an int")
 
                 result = self.single_hack(
                     var_words, tags, arcs, rels,
@@ -181,7 +204,7 @@ class HackWhole:
                     cgs_flg=cgs_flg,
                     step_size=config.hk_step_size,
                     verbose=False,
-                    max_change_num=config.hk_max_change,
+                    max_change_num=max_change_num,
                     iter_id=iter_id
                 )
                 # Fail
@@ -203,8 +226,16 @@ class HackWhole:
             agg.aggregate(("iters", iter_id), ("time", t1 - t0),
                           ("fail", abs(best_attack_metric.uas - raw_metric.uas) < 1e-4),
                           ('best_iter', best_iter), ("changed", len(self.change_positions)))
-            log('Show result from iter {}:'.format(best_iter))
+            log('Show result from iter {}, max change {}:'.format(best_iter, max_change_num))
             log(best_info)
+            for i in range(1, var_words.size(1)):
+                fout.write("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n".format(
+                    i, vocab.words[var_words[0][i]], '_', 
+                    vocab.tags[tags[0][i]], vocab.tags[tags[0][i]],
+                    '_', arcs[0][i].item(), vocab.rels[rels[0][i]], '_', '_'
+                ))
+            fout.write('\n')
+            fout.flush()
             log('Aggregated result: {} --> {}, '
                 'iters(avg) {:.1f}, time(avg) {:.1f}s, '
                 'fail rate {:.2f}, best_iter(avg) {:.1f}, best_iter(std) {:.1f}, '
