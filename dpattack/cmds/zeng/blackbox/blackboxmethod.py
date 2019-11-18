@@ -358,6 +358,6 @@ class CharTypo(BlackBoxMethod):
         # generate word index to be attacked
         attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
 
-        attack_seq = self.aug.get_aug_idxes(seqs, attack_index)
+        attack_seq = self.aug.get_typos(seqs, attack_index)
 
         return [Corpus.ROOT] + attack_seq, mask, arcs, rels, len(attack_index)

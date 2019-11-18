@@ -4,23 +4,16 @@ import random
 class CharTypoAug(object):
     def __init__(self, char_dict):
         self.char_list = [key for key in char_dict.keys() if key.isdigit() or key.isalpha()]
-        self.trisection = [1.0 / 3.0, 2.0 / 3.0, 1.0]
         self.function = [self.substitute, self.insert, self.delete]
 
-    def get_aug_idxes(self, seq, indexes):
+    def get_typos(self, seq, indexes):
         origin_seq = seq.split()
         if len(indexes) == 0:
             return origin_seq
 
         attack_seq = origin_seq.copy()
-        random_value = np.random.rand(len(indexes))
-        for count, index in enumerate(indexes):
-            if random_value[count] < self.trisection[0]:
-                attack_seq[index] = self.function[0](origin_seq[index])
-            elif random_value[count] < self.trisection[1]:
-                attack_seq[index] = self.function[1](origin_seq[index])
-            else:
-                attack_seq[index] = self.function[2](origin_seq[index])
+        for index in indexes:
+            attack_seq[index] = random.choice(self.function)(origin_seq[index])
         return attack_seq
 
     def substitute(self, words):
