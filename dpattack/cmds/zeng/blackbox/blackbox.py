@@ -52,8 +52,9 @@ class BlackBoxAttack(Attack):
                                                                             config.blackbox_index if config.blackbox_index == 'unk' else config.blackbox_pos_tag,
                                                                             config.revised_rate)
             else:
-                attack_corpus_save_path = '{}/black_{}.conllx'.format(config.result_path,
-                                                                        config.blackbox_method)
+                attack_corpus_save_path = '{}/black_{}_{}.conllx'.format(config.result_path,
+                                                                        config.blackbox_method,
+                                                                         config.revised_rate)
         return attack_corpus_save_path
 
     def get_attack_seq_generator(self, config):

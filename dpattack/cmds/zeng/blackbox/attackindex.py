@@ -7,16 +7,17 @@ For substitute, two method: unk(replace each word to <unk>) and pos_tag
 import math
 import torch
 import numpy as np
-from dpattack.cmds.zeng.blackbox.constant import CONSTANT
+from dpattack.utils.constant import CONSTANT
 from dpattack.utils.parser_helper import is_chars_judger
 from dpattack.libs.luna.pytorch import cast_list
 from dpattack.models.char import CharParser
-from pytorch_pretrained_bert import BertTokenizer,BertForMaskedLM
+from transformers import GPT2Tokenizer,GPT2LMHeadModel
 
 
 class AttackIndex(object):
     def __init__(self, config):
         self.revised_rate = config.revised_rate
+        self.config = config
 
     def get_attack_index(self, *args, **kwargs):
         pass
@@ -34,12 +35,31 @@ class AttackIndex(object):
         else:
             return np.random.choice(index, number)
 
+class AttackIndexRandomGenerator(AttackIndex):
+    def __init__(self, config):
+        super(AttackIndexRandomGenerator, self).__init__(config)
+
+    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
+        sentence_length = len(seqs)
+        number = self.get_number(self.revised_rate, sentence_length)
+        return self.get_random_index_to_be_attacked(tags, sentence_length, number)
+
+    def get_random_index_to_be_attacked(self, tags, length, number):
+        if self.config.input == 'char':
+            word_index = list(range(length))
+        else:
+            word_index = [index for index, tag in enumerate(tags) if tag in CONSTANT.REAL_WORD_TAGS]
+        if len(word_index) <= number:
+            return word_index
+        else:
+            return np.random.choice(word_index, number, replace=False)
+
 
 class AttackIndexInserting(AttackIndex):
     def __init__(self, config):
         super(AttackIndexInserting, self).__init__(config)
 
-    def get_attack_index(self, seqs, tags, arcs):
+    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
         index = []
         length = len(tags)
         for i in range(length):
@@ -77,7 +97,7 @@ class AttackIndexDeleting(AttackIndex):
     def __init__(self, config):
         super(AttackIndexDeleting, self).__init__(config)
 
-    def get_attack_index(self, tags, arcs):
+    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
         index = []
         length = len(tags)
         for i in range(length):
@@ -194,34 +214,29 @@ class AttackIndexInsertingPunct(AttackIndex):
     def __init__(self, config, vocab):
         super(AttackIndexInsertingPunct, self).__init__(config)
 
-        self.bertMaskedLM = BertForMaskedLM.from_pretrained(config.path)
-        self.tokenizer = BertTokenizer.from_pretrained(config.path)
-        self.bertMaskedLM.eval()
+        self.tokenizer = GPT2Tokenizer.from_pretrained(config.language_model_path)
+        self.model = GPT2LMHeadModel.from_pretrained(config.language_model_path)
+        self.model.eval()
         if torch.cuda.is_available():
-            self.bertMaskedLM = self.bertMaskedLM.cuda()
-        self.loss_fct = torch.nn.CrossEntropyLoss()
+            self.model = self.model.cuda()
         self.vocab = vocab
         self.puncts = self.vocab.id2word(self.vocab.puncts)
 
-    def get_language_model_score(self, sentences):
-        tensor_sentence_list = []
-        for sentence in sentences:
-            tokenize_input = self.tokenizer.tokenize(sentence)
-            tensor_sentence_list.append(torch.tensor([self.tokenizer.convert_tokens_to_ids(tokenize_input)]))
-        tensor_input = torch.cat(tensor_sentence_list,dim=0)
+    def get_sentence_score(self, sentence):
+        tokenize_input = self.tokenizer.tokenize(sentence)
+        tensor_input = torch.tensor([[self.tokenizer.eos_token_id] + self.tokenizer.convert_tokens_to_ids(tokenize_input)])
         if torch.cuda.is_available():
             tensor_input = tensor_input.cuda()
-        predictions = self.bertMaskedLM(tensor_input)
-        loss = [None] * len(sentences)
-        for i in range(len(sentences)):
-            loss[i] = math.exp(self.loss_fct(predictions[i].squeeze(), tensor_input[i].squeeze()).data)
-        return loss
+        output = self.model(tensor_input, labels=tensor_input)
+        loss, logits = output[:2]
+        return -loss.item() * len(tokenize_input)
 
-    def get_attack_index(self, seqs):
+    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
         comma_insert_index, comma_insert_seqs = self.duplicate_sentence_with_comma_insertion(seqs, len(seqs))
         if len(comma_insert_index) == 0:
             return []
-        seq_scores = self.get_language_model_score(comma_insert_seqs)
+        with torch.no_grad():
+            seq_scores = [self.get_sentence_score(seq) for seq in comma_insert_seqs]
         sorted_index = sorted(range(len(seq_scores)), key=lambda k: seq_scores[k], reverse=True)
         number = self.get_number(self.revised_rate, len(seqs))
         return [comma_insert_index[index] for index in sorted_index[:number]]
@@ -242,32 +257,29 @@ class AttackIndexDeletingPunct(AttackIndex):
     def __init__(self, config, vocab):
         super(AttackIndexDeletingPunct, self).__init__(config)
 
-        self.bertMaskedLM = BertForMaskedLM.from_pretrained(config.path)
-        self.tokenizer = BertTokenizer.from_pretrained(config.path)
-        self.bertMaskedLM.eval()
+        self.tokenizer = GPT2Tokenizer.from_pretrained(config.language_model_path)
+        self.model = GPT2LMHeadModel.from_pretrained(config.language_model_path)
+        self.model.eval()
         if torch.cuda.is_available():
-            self.bertMaskedLM = self.bertMaskedLM.cuda()
-        self.loss_fct = torch.nn.CrossEntropyLoss()
+            self.model = self.model.cuda()
         self.vocab = vocab
         self.puncts = self.vocab.id2word(self.vocab.puncts)
 
-    def get_language_model_score(self, sentences):
-        loss = [None] * len(sentences)
-        for index, sentence in enumerate(sentences):
-            tokenize_input = self.tokenizer.tokenize(sentence)
-            tensor_input = torch.tensor([self.tokenizer.convert_tokens_to_ids(tokenize_input)])
-            if torch.cuda.is_available():
-                tensor_input = tensor_input.cuda()
-            predictions = self.bertMaskedLM(tensor_input)
-            loss[index] = math.exp(self.loss_fct(predictions.squeeze(), tensor_input.squeeze()).data)
+    def get_sentence_score(self, sentence):
+        tokenize_input = self.tokenizer.tokenize(sentence)
+        tensor_input = torch.tensor([[self.tokenizer.eos_token_id] + self.tokenizer.convert_tokens_to_ids(tokenize_input)])
+        if torch.cuda.is_available():
+            tensor_input = tensor_input.cuda()
+        output = self.model(tensor_input, labels=tensor_input)
+        loss, logits = output[:2]
+        return -loss.item() * len(tokenize_input)
 
-        return loss
-
-    def get_attack_index(self, seqs, arcs):
+    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
         comma_insert_index, comma_insert_seqs = self.duplicate_sentence_with_comma_insertion(seqs, len(seqs), arcs)
         if len(comma_insert_index) == 0:
             return []
-        seq_scores = self.get_language_model_score(comma_insert_seqs)
+        with torch.no_grad():
+            seq_scores = [self.get_sentence_score(seq) for seq in comma_insert_seqs]
         sorted_index = sorted(range(len(seq_scores)), key=lambda k: seq_scores[k], reverse=True)
         number = self.get_number(self.revised_rate, len(seqs))
         return [comma_insert_index[index] for index in sorted_index[:number]]

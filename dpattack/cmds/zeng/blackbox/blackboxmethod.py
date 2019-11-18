@@ -53,6 +53,8 @@ class Substituting(BlackBoxMethod):
         self.aug = get_blackbox_augmentor(config.blackbox_model, config.path, config.revised_rate, vocab=vocab, ftrain=config.ftrain)
 
     def get_index(self, config, vocab=None, parser=None):
+        if config.mode == 'augmentation':
+            return AttackIndexRandomGenerator(config)
         if config.blackbox_index == 'pos':
             return AttackIndexPosTag(config)
         else:
@@ -107,7 +109,7 @@ class Substituting(BlackBoxMethod):
         tag_equal_flag = torch.eq(attack_tag_idx[:, index + 1], tag_idx[0, index + 1])
         if torch.sum(tag_equal_flag) != 0:
             attack_succeed_index = tag_equal_flag.nonzero().squeeze(0)
-            return attack_succeed_index[0]
+            return attack_succeed_index[0].item()
         return self.FALSE_TOKEN
 
 
@@ -123,7 +125,7 @@ class Inserting(BlackBoxMethod):
         # seq_idx, tag_idx, arcs, rels, mask = map(lambda x:x.squeeze(0) if len(x.shape)==2 else x,[seq_idx, tag_idx, arcs, rels, mask])
         # generate word index to be attacked
         gold_arcs = cast_list(arcs)
-        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), tags, gold_arcs)
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
         # generate word candidates to be attacked
         candidates, indexes = self.inserting(seqs, attack_index)
         # check candidates by pos_tagger
@@ -180,7 +182,7 @@ class Inserting(BlackBoxMethod):
         tag_equal_flag = torch.eq(attack_tag_idx[:, index + 1], gold_tag_idx[index + 1])
         if torch.sum(tag_equal_flag) != 0:
             attack_succeed_index = tag_equal_flag.nonzero().squeeze(0)
-            return attack_succeed_index[0]
+            return attack_succeed_index[0].item()
         return self.FALSE_TOKEN
 
     def get_gold_tag_under_inserting(self, tag, index):
@@ -244,7 +246,7 @@ class InsertingPunct(BlackBoxMethod):
         self.index = AttackIndexInsertingPunct(config, vocab)
 
     def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
-        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs))
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
 
         attack_index.sort(reverse=True)
         attack_mask = cast_list(mask)
@@ -278,7 +280,7 @@ class Deleting(BlackBoxMethod):
         seq_idx, tag_idx, arcs, rels, mask = map(lambda x:x.squeeze(0) if len(x.shape)==2 else x,[seq_idx, tag_idx, arcs, rels, mask])
 
         gold_arcs = cast_list(arcs)
-        attack_index = self.index.get_attack_index(tags, gold_arcs)
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
         attack_index.sort(reverse=True)
 
         attack_seq = [Corpus.ROOT] + seqs.split()
@@ -310,7 +312,7 @@ class DeletingPunct(BlackBoxMethod):
 
     def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
         gold_arcs = cast_list(arcs)
-        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), gold_arcs)
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
 
         attack_index.sort(reverse=True)
         attack_mask = cast_list(mask)
@@ -342,6 +344,8 @@ class CharTypo(BlackBoxMethod):
         self.aug = CharTypoAug(vocab.char_dict)
 
     def get_index(self, config, vocab=None, parser=None):
+        if config.mode == 'augmentation':
+            return AttackIndexRandomGenerator(config)
         if config.blackbox_index == 'pos':
             return AttackIndexPosTag(config)
         else:

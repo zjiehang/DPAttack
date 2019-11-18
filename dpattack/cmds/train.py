@@ -65,6 +65,15 @@ class Train(object):
         assert config.train_task in ['parser', 'tagger']
         is_training_parser = config.train_task == 'parser'
 
+        if config.augmentation_training:
+            aug_test = Corpus.load(config.augmentation_test_file)
+            aug_testset = TextDataset(vocab.numericalize(aug_test))
+            aug_test_loader = batchify(dataset=aug_testset,
+                                   batch_size=config.batch_size,
+                                   n_buckets=config.buckets)
+            print(f"{'test:':6} {len(aug_testset):5} sentences in total, "
+                  f"{len(aug_test_loader):3} batches provided")
+
         if is_training_parser:
             model = init_parser(config, vocab.embeddings)
             task = ParserTask(vocab, model)
@@ -103,18 +112,12 @@ class Train(object):
             print(f"{'dev:':6} Loss: {loss:.4f} {dev_metric}")
             loss, test_metric = task.evaluate(test_loader, config.punct)
             print(f"{'test:':6} Loss: {loss:.4f} {test_metric}")
+            if config.augmentation_training:
+                loss, aug_test_metric = task.evaluate(aug_test_loader, config.punct)
+                print(f"{'test:':6} Loss: {loss:.4f} {aug_test_metric}")
 
             t = datetime.now() - start
-            # save the models if it is the best so far
-            # if dev_metric > best_metric:
-            #     best_e, best_metric = epoch, dev_metric
-            #     models.dpattack.save(config.parser_model + f".{best_e}")
-            #     print(f"{t}s elapsed (saved)\n")
-            # else:
-            #     print(f"{t}s elapsed\n")
-            # total_time += t
-            # # if epoch - best_e >= config.patience:
-            # #     break
+
             if dev_metric > best_metric and epoch > config.patience:
                 best_e, best_metric = epoch, dev_metric
                 if is_training_parser:
@@ -140,5 +143,11 @@ class Train(object):
 
         print(f"max score of dev is {best_metric.score:.2%} at epoch {best_e}")
         print(f"the score of test at epoch {best_e} is {metric.score:.2%}")
+
+        if config.augmentation_training:
+            loss, metric = task.evaluate(aug_test_loader, config.punct)
+            print(f"the score of aug test at epoch {best_e} is {metric.score:.2%}")
+
         print(f"average time of each epoch is {total_time / epoch}s")
         print(f"{total_time}s elapsed")
+
