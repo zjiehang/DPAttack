@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 
 from collections import namedtuple
-
+from tabulate import tabulate
 
 Sentence = namedtuple(typename='Sentence',
                       field_names=['ID', 'FORM', 'LEMMA', 'CPOS',
@@ -9,15 +9,51 @@ Sentence = namedtuple(typename='Sentence',
                                    'PHEAD', 'PDEPREL'],
                       defaults=[None]*10)
 
+
+def sent_print(sent: Sentence, format='table'):
+    """
+        conll:
+            The raw conll format (10 columns)
+        tablev:
+            A minimal version of conll format (5 columns, the transpose of tableh ↓)
+        tableh:
+            --  -  ---  ---  ---  -----  ------  -
+            7   7  7    7    7    7      0       7
+            RB  ,  PRP  VBD  RB   NNP    NNP     .
+            No  ,  it   was  n't  Black  Monday  .
+            1   2  3    4    5    6      7       8
+            --  -  ---  ---  ---  -----  ------  -
+    """
+    if format == 'conll':
+        table = []
+        for i in range(len(sent.ID)):
+            table.append([sent.ID[i], sent.FORM[i], sent.LEMMA[i], sent.CPOS[i],
+                          sent.POS[i], sent.FEATS[i], sent.HEAD[i], sent.DEPREL[i],
+                          sent.PHEAD[i], sent.PDEPREL[i]])
+        print(tabulate(table))
+    elif format == 'tablev':
+        table = []
+        for i in range(len(sent.ID)):
+            table.append([sent.ID[i], sent.FORM[i], sent.POS[i],
+                          sent.HEAD[i], sent.DEPREL[i]])
+        print(tabulate(table))
+    elif format == 'tableh':
+        table = [sent.HEAD, sent.POS, sent.FORM, sent.ID]
+        print(tabulate(table))
+    else:
+        raise NotImplementedError
+
+
 def init_sentence(seqs, tags, arcs, rels):
     length = len(seqs)
-    ID = tuple(i for i in range(1,length+1))
+    ID = tuple(i for i in range(1, length+1))
     FORM = tuple(seqs)
     CPOS = tuple(tags)
     POS = tuple(tags)
     HEAD = tuple(arcs)
     DEPREL = tuple(rels)
-    LEMMA, FEATS, PHEAD, PDEPREL = map(lambda x:tuple('_' for _ in range(x)),[length]*4)
+    LEMMA, FEATS, PHEAD, PDEPREL = map(
+        lambda x: tuple('_' for _ in range(x)), [length]*4)
     return Sentence(ID, FORM, LEMMA, CPOS, POS, FEATS, HEAD, DEPREL, PHEAD, PHEAD)
 
 
@@ -77,7 +113,6 @@ class Corpus(object):
     def rels(self, sequences):
         self.sentences = [sentence._replace(DEPREL=sequence)
                           for sentence, sequence in zip(self, sequences)]
-
 
     @classmethod
     def load(cls, fname):
