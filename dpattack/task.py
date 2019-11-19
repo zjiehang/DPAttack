@@ -86,8 +86,8 @@ class ParserTask(Task):
     # WARNING: DIRTY CODE >>>>>>>>>>>>>>>>>>>>>>>>>>>
     @torch.no_grad()
     def partial_evaluate(self, instance: tuple,
-                        mask_idxes: Optional[List[int]] = None,
-                        punct=False, tagger=None):
+                         mask_idxs: Optional[List[int]] = None,
+                         punct=False, tagger=None):
         self.model.eval()
 
         loss, metric = 0, ParserMetric()
@@ -107,7 +107,7 @@ class ParserTask(Task):
             words, is_chars_judger(self.model, tags, chars))
 
         # mask given indices
-        for idx in mask_idxes:
+        for idx in mask_idxs:
             mask[0][idx] = 0
 
         s_arc, s_rel = s_arc[mask], s_rel[mask]
