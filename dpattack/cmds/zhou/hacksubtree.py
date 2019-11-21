@@ -1,133 +1,65 @@
 # -*- coding: utf-8 -*-
 import math
+import random
+from collections import defaultdict
 from contextlib import contextmanager
-from typing import Union, Optional
+from typing import Dict, List, Optional, Union
 
+import torch
+from tabulate import tabulate
 from torch.utils.data import DataLoader
 
-from dpattack.models import WordTagParser, WordParser, PosTagger
-from dpattack.utils.data import TextDataset, collate_fn
-from dpattack.utils.embedding_searcher import EmbeddingSearcher, cos_dist, euc_dist
-from dpattack.utils.parser_helper import load_parser
+from dpattack.libs.luna import (Aggregator, CherryPicker, TrainingStopObserver,
+                                as_table, auto_create, cast_list,
+                                fetch_best_ckpt_name, idx_to_msk, log,
+                                log_config, ram_read, ram_write, show_mean_std,
+                                time)
+from dpattack.models import PosTagger, WordParser, WordTagParser
 from dpattack.task import ParserTask
-from dpattack.utils.metric import Metric, ParserMetric
 from dpattack.utils.corpus import Corpus, Sentence, sent_print
-from tabulate import tabulate
-import torch
-from collections import defaultdict
-from dpattack.libs.luna import log_config, log, fetch_best_ckpt_name, show_mean_std, idx_to_msk, cast_list, as_table, \
-    ram_write, ram_read, TrainingStopObserver, CherryPicker, Aggregator, time
+from dpattack.utils.data import TextDataset, collate_fn
+from dpattack.utils.embedding_searcher import (EmbeddingSearcher, cos_dist,
+                                               euc_dist)
+from dpattack.utils.metric import Metric, ParserMetric
+from dpattack.utils.parser_helper import load_parser
+from dpattack.utils.tag_tool import gen_tag_dict
 from dpattack.utils.vocab import Vocab
-import random
 
-random.seed(1)
+from .ihack import HACK_TAGS, IHack, v
 
-
-# Code for fucking VSCode debug console
-class V:
-    def __sub__(self, tsr):
-        for ele in tsr.__repr__().split('\n'):
-            print(ele)
+from .treeops import gen_spans
 
 
-v = V()
-
-
-class HackSubtree:
-    def __init__(self):
-        self.task: ParserTask
-        self.embed_searcher: EmbeddingSearcher
-        # self.tagger: PosTagger
-
-    @property
-    def vocab(self) -> Vocab:
-        return self.task.vocab
-
-    @property
-    def parser(self) -> Union[WordTagParser, WordParser]:
-        return self.task.model
+class HackSubtree(IHack):
 
     def __call__(self, config):
-        log_config('hacksubtree',
-                   log_path=config.workspace,
-                   default_target='cf')
+        if config.logf == 'on':
+            log_config('hacksubtree',
+                       log_path=config.workspace,
+                       default_target='cf')
+        else:
+            log = print
+
         for arg in config.kwargs:
             if arg.startswith('hks'):
                 log(arg, '\t', config.kwargs[arg])
         log('------------------')
 
-        print("Load the models")
-        vocab = torch.load(config.vocab)  # type: Vocab
-        parser = load_parser(fetch_best_ckpt_name(config.parser_model))
-        self.task = ParserTask(vocab, parser)
+        self.setup(config)
 
-        # self.tagger = PosTagger.load(fetch_best_ckpt_name(config.tagger_model))
-
-        print("Load the dataset")
-        train_corpus = Corpus.load(config.ftrain)  # type:Corpus
-        corpus = Corpus.load(config.fdata)
-        dataset = TextDataset(vocab.numericalize(corpus, True))
-        # set the data loader
-        loader = DataLoader(dataset=dataset,
-                            collate_fn=collate_fn)
-
-        def embed_backward_hook(module, grad_in, grad_out):
-            ram_write('embed_grad', grad_out[0])
-
-        parser.embed.register_backward_hook(embed_backward_hook)
-
-        self.embed_searcher = EmbeddingSearcher(
-            embed=parser.embed.weight,
-            idx2word=lambda x: vocab.words[x],
-            word2idx=lambda x: vocab.word_dict[x]
-        )
-
-        # HIGHLIGHT:
-
-        for sid, (words, tags, chars, arcs, rels) in enumerate(loader):
+        for sid, (words, tags, chars, arcs, rels) in enumerate(self.loader):
             if sid < 2 or sid > 10:
                 continue
-            sent = corpus[sid]
-            sent_len = words.size(1)
-            spans = gen_spans(sent)
-            valid_spans = list(
-                filter(lambda ele: 5 <= ele[1] - ele[0] <= 8, spans))
-            if len(valid_spans) == 0:
-                log("Sentence {} donot have valid spans".format(i))
-                break
-            chosen_span = random.choice(valid_spans)
-            sent_print(sent, 'tableh')
-            print('spans', spans)
-            print('valid', valid_spans)
-            print('chosen', chosen_span)
+            self.hack(instance=(words, tags, chars, arcs, rels),
+                      sentence=self.corpus[sid])
+            exit()
 
-            raw_words = words.clone()
-            var_words = words.clone()
-            words_text = vocab.id2word(words[0])
-            tags_text = vocab.id2tag(tags[0])
-
-            # eval_idxes = [eval_idx for eval_idx in range(sent_len)
-            #               if not chosen_span[0] <= eval_idx <= chosen_span[1]]
-            mask_idxes = list(range(chosen_span[0], chosen_span[1]))
-            _, raw_metric = self.task.partial_evaluate(
-                instance=(raw_words, tags, None, arcs, rels),
-                mask_idxes=mask_idxes)
-
-            for iter_id in range(50):
-                result = self.single_hack(
-                    instance=(var_words, tags, None, arcs, rels),
-                    raw_words=raw_words, raw_metric=raw_metric,
-                    mask_idxes=mask_idxes,
-                    iter_id=iter_id,
-                )
-                var_words = result['words']
-
-    def backward_loss(self, instance, mask_idxes) -> torch.Tensor:
+    def backward_loss(self, instance, mask_idxs) -> torch.Tensor:
         self.parser.zero_grad()
         words, tags, chars, arcs, rels = instance
         mask = words.ne(self.vocab.pad_index)
         mask[0, 0] = 0
-        for mask_idx in mask_idxes:
+        for mask_idx in mask_idxs:
             mask[0, mask_idx] = 0
         s_arc, s_rel = self.parser(words, tags)
         s_arc, s_rel = s_arc[mask], s_rel[mask]
@@ -150,10 +82,51 @@ class HackSubtree:
 
         return ram_read('embed_grad')
 
+    def hack(self, instance, sentence):
+        words, tags, chars, arcs, rels = instance
+        sent_len = words.size(1)
+        spans = gen_spans(sentence)
+        valid_spans = list(
+            filter(lambda ele: 5 <= ele[1] - ele[0] <= 8, spans))
+        if len(valid_spans) == 0:
+            log("Sentence {} donot have valid spans".format(sid))
+            return
+        chosen_span = random.choice(valid_spans)
+        sent_print(sentence, 'tableh')
+        print('spans', spans)
+        print('valid', valid_spans)
+        print('chosen', chosen_span)
+
+        raw_words = words.clone()
+        var_words = words.clone()
+        words_text = self.vocab.id2word(words[0])
+        tags_text = self.vocab.id2tag(tags[0])
+
+        # eval_idxs = [eval_idx for eval_idx in range(sent_len)
+        #               if not chosen_span[0] <= eval_idx <= chosen_span[1]]
+        mask_idxs = list(range(chosen_span[0], chosen_span[1]))
+        _, raw_metric = self.task.partial_evaluate(
+            instance=(raw_words, tags, None, arcs, rels),
+            mask_idxs=mask_idxs)
+
+        forbidden_idxs__ = [self.vocab.unk_index, self.vocab.pad_index]
+        for iter_id in range(50):
+            result = self.single_hack(
+                instance=(var_words, tags, None, arcs, rels),
+                raw_words=raw_words, raw_metric=raw_metric,
+                mask_idxs=mask_idxs,
+                iter_id=iter_id,
+                forbidden_idxs__=forbidden_idxs__
+            )
+            var_words = result['words']
+            # Maybe it is a reference?
+            forbidden_idxs__ = result['forbidden_idxs__']
+
     def single_hack(self, instance,
-                    mask_idxes,
+                    mask_idxs,
                     iter_id,
                     raw_words, raw_metric,
+                    forbidden_idxs__: list,
                     verbose=True,
                     step_size=8,
                     dist_measure='euc'):
@@ -162,13 +135,14 @@ class HackSubtree:
 
         # Backward loss
         embed_grad = self.backward_loss(
-            instance=instance, mask_idxes=mask_idxes)
+            instance=instance, mask_idxs=mask_idxs)
 
         grad_norm = embed_grad.norm(dim=2)
 
-        for i in mask_idxes:
-            grad_norm[0][i] = -(grad_norm[0][i] + 1000)
-        print(grad_norm)
+        for i in range(sent_len):
+            if i not in mask_idxs:
+                grad_norm[0][i] = -(grad_norm[0][i] + 1000)
+        # print(grad_norm)
 
         # Select a word and forbid itself
         word_sid = grad_norm[0].argmax()
@@ -181,7 +155,15 @@ class HackSubtree:
         changed = emb_to_rpl - delta
 
         must_tag = self.vocab.tags[tags[0][word_sid].item()]
-        new_word_vid, repl_info = self.find_replacement(changed, dist_measure)
+        # must_tag = None
+        # must_tag = 'CD'
+        forbidden_idxs__.append(word_vid)
+        new_word_vid, repl_info = self.find_replacement(
+            changed, must_tag, dist_measure='euc',
+            forbidden_idxs__=forbidden_idxs__,
+            repl_method='tagdict',
+            words=words, word_sid=word_sid
+        )
 
         new_words = words.clone()
         new_words[0][word_sid] = new_word_vid
@@ -190,9 +172,10 @@ class HackSubtree:
             Evaluating the result
         """
         # print('START EVALUATING')
-        # print([self.vocab.words[ele] for ele in self.forbidden_idxs])
-        loss, metric = self.task.partial_evaluate(instance=(new_words, tags, None, arcs, rels),
-                                                  mask_idxes=mask_idxes)
+        # print([self.vocab.words[ele] for ele in self.forbidden_idxs__])
+        loss, metric = self.task.partial_evaluate(
+            instance=(new_words, tags, None, arcs, rels),
+            mask_idxs=mask_idxs)
 
         def _gen_log_table():
             new_words_text = [self.vocab.words[i.item()] for i in new_words[0]]
@@ -206,12 +189,13 @@ class HackSubtree:
                 gold_arc = int(arcs[0][i])
                 pred_arc = 0 if i == 0 else pred_arcs[0][i - 1]
                 table.append([
-                    "{}{}".format(i, "@" if i in mask_idxes else ""),
-                    new_words_text[i],
-                    raw_words_text[i] if raw_words_text[i] != new_words_text[i] else "*",
+                    "{}{}".format(i, "@" if i in mask_idxs else ""),
+                    raw_words_text[i],
+                    '>{}'.format(
+                        new_words_text[i]) if raw_words_text[i] != new_words_text[i] else "*",
                     tags_text[i],
                     gold_arc,
-                    pred_arc if pred_arc != gold_arc else '*',
+                    '>{}'.format(pred_arc) if pred_arc != gold_arc else '*',
                     grad_norm[0][i].item()
                 ])
             return table
@@ -235,85 +219,8 @@ class HackSubtree:
         else:
             info = tabulate(_gen_log_table(), floatfmt='.6f')
         return {'code': 200, 'words': new_words,
+                "forbidden_idxs__": forbidden_idxs__,
                 'attack_metric': metric, 'info': info}
-
-    @torch.no_grad()
-    def find_replacement(self, changed,
-                         dist_measure) -> (Optional[torch.Tensor], dict):
-        dists, idxs = self.embed_searcher.find_neighbours(changed, 64,
-                                                          dist_measure, False)
-        new_word_vid = idxs[0]
-        return new_word_vid, {"avgd": dists.mean().item(),
-                              "mind": dists.min().item()}
 
 
 # HIGHLIGHT: SPAN OPERATION
-def gen_spans(sent: Sentence):
-    """
-    Sample of a sentence (starting at 0):
-          ID = ('1', '2', '3', '4', '5', '6', '7', '8')
-        HEAD = ('7', '7', '7', '7', '7', '7', '0', '7')
-
-    Return(ROOT included): 
-        [(0, 8), (1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (1, 8), (8, 8)]
-    """
-    ids = [0] + list(map(int, sent.ID))
-    heads = [-1] + list(map(int, sent.HEAD))
-    sent_len = len(ids)
-    # print(ids, heads)
-    l_children = [[] for _ in range(sent_len)]
-    r_children = [[] for _ in range(sent_len)]
-
-    for tid, hid in enumerate(heads):
-        if hid != -1:
-            if hid > tid:
-                l_children[hid].append(tid)
-            else:
-                r_children[hid].append(tid)
-
-    # for i in range(sent_len):
-    #     print(ids[i], heads[i], l_children[ids[i]], r_children[ids[i]])
-
-    # Find left/right-most span index
-    def _find_span_id(idx, dir='l'):
-        if dir == 'l':
-            if len(l_children[idx]) == 0:
-                return idx
-            else:
-                return _find_span_id(l_children[idx][0], 'l')
-        else:
-            if len(r_children[idx]) == 0:
-                return idx
-            else:
-                return _find_span_id(r_children[idx][-1], 'r')
-
-    spans = [(_find_span_id(idx, 'l'), _find_span_id(idx, 'r'))
-             for idx in range(sent_len)]
-    # print(headed_span)
-
-    # headed_span_length = [right - left + 1 for left, right in headed_span]
-    # print(headed_span_length)
-    return spans
-
-
-def subtree_distribution(corpus: Corpus):
-    print(corpus[4])
-    print(gen_spans(corpus[4]))
-    exit()
-    min_span_len = 5
-    max_span_len = 10
-    # num = 0
-    for sid, sent in enumerate(corpus):
-        if len(sent.ID) < 15:
-            continue
-        min_span_len = len(sent.ID) * 0.2
-        max_span_len = len(sent.ID) * 0.4
-        span = gen_spans(sent)
-        span = list(filter(lambda ele: min_span_len <=
-                           ele[1] - ele[0] <= max_span_len, span))
-        # num += len(span)
-
-        print(len(sent.ID), len(span))
-        if sid == 10:
-            print()
-            exit()
