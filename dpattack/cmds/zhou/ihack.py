@@ -22,11 +22,12 @@ from dpattack.utils.embedding_searcher import (EmbeddingSearcher, cos_dist,
                                                euc_dist)
 from dpattack.utils.metric import Metric, ParserMetric
 from dpattack.utils.parser_helper import load_parser
-from dpattack.utils.tag_tool import gen_tag_dict
+from dpattack.utils.tag_tool import gen_tag_dict, train_gram_tagger
 from dpattack.utils.vocab import Vocab
 import random
 from config import Config
 from functools import lru_cache
+from nltk import TrigramTagger
 
 
 # Code for fucking VSCode debug console
@@ -70,7 +71,8 @@ class IHack:
 
         self.task: ParserTask
 
-        self.tagger: PosTagger
+        self.nn_tagger: PosTagger
+        self.gram_tagger: TrigramTagger
         self.tag_dict: dict
 
         self.embed_searcher: EmbeddingSearcher
@@ -91,7 +93,8 @@ class IHack:
         print("Load the models")
         vocab = torch.load(config.vocab)  # type: Vocab
         parser = load_parser(fetch_best_ckpt_name(config.parser_model))
-        self.tagger = PosTagger.load(fetch_best_ckpt_name(config.tagger_model))
+        self.nn_tagger = PosTagger.load(
+            fetch_best_ckpt_name(config.tagger_model))
 
         self.task = ParserTask(vocab, parser)
 
@@ -104,6 +107,11 @@ class IHack:
                                         train_corpus, vocab, 3, False),
                                     cache=True, path=config.workspace + '/saved_vars')
         self.tag_dict = {k: torch.tensor(v) for k, v in self.tag_dict.items()}
+
+        self.gram_tagger = auto_create("trigram_tagger",
+                                       lambda: train_gram_tagger(
+                                           train_corpus, ngram=3),
+                                       cache=True, path=config.workspace + '/saved_vars')
 
         if config.hk_training_set == 'on':
             self.corpus = train_corpus
@@ -153,19 +161,19 @@ class IHack:
             must_tags = tuple(self.vocab.tags)
         if isinstance(must_tags, str):
             must_tags = (must_tags,)
-        
-        if repl_method == 'tagger':
+
+        if repl_method == 'lstm':
             # Pipeline:
             #    256 minimum dists
-            # -> Filtered by a tagger
+            # -> Filtered by a NN tagger
             # -> Smallest one
             words = words.repeat(64, words.size(1))
             dists, idxs = self.embed_searcher.find_neighbours(
                 changed, 64, dist_measure, False)
             for i, ele in enumerate(idxs):
                 words[i][word_sid] = ele
-            self.tagger.eval()
-            s_tags = self.tagger(words)
+            self.nn_tagger.eval()
+            s_tags = self.nn_tagger(words)
             pred_tags = s_tags.argmax(-1)[:, word_sid]
             new_word_vid = None
             for i, ele in enumerate(pred_tags):
@@ -175,6 +183,27 @@ class IHack:
                         break
             return new_word_vid, {"avgd": dists.mean().item(),
                                   "mind": dists.min().item()}
+        elif repl_method == '3gram':
+            # Pipeline:
+            #    256 minimum dists
+            # -> Filtered by a 3-GRAM tagger
+            # -> Smallest one
+            prefix = (self.vocab.words[words[0][word_sid - 2].item()],
+                      self.vocab.words[words[0][word_sid - 1].item()])
+            dists, idxs = self.embed_searcher.find_neighbours(
+                changed, 64, dist_measure, False)
+            sents = [(*prefix, self.vocab.words[ele]) for ele in cast_list(idxs)]
+
+            pred_tags = self.gram_tagger.tag_sents(sents)
+            s_tags = [ele[2][1] for ele in pred_tags]
+
+            new_word_vid = None
+            for i, ele in enumerate(s_tags):
+                if ele in must_tags:
+                    if idxs[i] not in forbidden_idxs__:
+                        new_word_vid = idxs[i]
+                        break
+            return new_word_vid, {}
         elif repl_method == 'tagdict':
             # Pipeline:
             #    All dists

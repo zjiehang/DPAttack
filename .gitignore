@@ -4,3 +4,4 @@ nogit/*
 .vscode/*
 **/__pycache__/*
 *.logs/*
+*.pstat

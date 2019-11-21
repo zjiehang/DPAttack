@@ -7,6 +7,7 @@ from typing import Optional, Union
 import torch
 from tabulate import tabulate
 from torch.utils.data import DataLoader
+from torch.distributions import Categorical
 
 from dpattack.libs.luna import (
     Aggregator, CherryPicker, TrainingStopObserver, as_table, cast_list,
@@ -25,7 +26,6 @@ from dpattack.utils.tag_tool import gen_tag_dict
 from dpattack.utils.vocab import Vocab
 
 from .ihack import IHack, v, HACK_TAGS
-
 
 class HackWhole(IHack):
 
@@ -121,6 +121,7 @@ class HackWhole(IHack):
         #  are in-placed! Never try to save an internal state of the variable.
         forbidden_idxs__ = [self.vocab.unk_index, self.vocab.pad_index]
         change_positions__ = set()
+        orphans__ = set()
         if isinstance(self.config.hk_max_change, int):
             max_change_num = self.config.hk_max_change
         elif isinstance(self.config.hk_max_change, float):
@@ -147,6 +148,7 @@ class HackWhole(IHack):
                 iter_id=iter_id,
                 forbidden_idxs__=forbidden_idxs__,
                 change_positions__=change_positions__,
+                orphans__=orphans__
             )
             # Fail
             if result['code'] == 404:
@@ -214,12 +216,12 @@ class HackWhole(IHack):
         return ram_read('embed_grad')
 
     # TODO: 1. Dynamically increase the step size?
-    # TODO: 2. Choose some words to change together?
     def single_hack(self,
                     words, tags, arcs, rels,
                     raw_words, raw_metric, raw_arcs,
                     forbidden_idxs__,
                     change_positions__,
+                    orphans__,
                     verbose=False,
                     max_change_num=1,
                     iter_id=-1):
@@ -247,6 +249,9 @@ class HackWhole(IHack):
         for i in range(sent_len):
             if self.vocab.tags[tags[0][i]] not in HACK_TAGS[self.config.hk_tag_type]:
                 position_mask[i] = True
+        # Mask some orphans
+        for i in orphans__:
+            position_mask[i] = True
         # Check if the number of changed words exceeds the max value
         if len(change_positions__) >= max_change_num:
             for i in range(sent_len):
@@ -264,9 +269,20 @@ class HackWhole(IHack):
         word_vids = []  # type: list[torch.Tensor]
         new_word_vids = []  # type: list[torch.Tensor]
 
-        _, topk_idxs = grad_norm[0].topk(2)
-        for ele in topk_idxs:
-            word_sids.append(ele)
+        if self.config.hk_selection == 'max':
+            _, topk_idxs = grad_norm[0].topk(1)
+            for ele in topk_idxs:
+                word_sids.append(ele)
+        elif self.config.hk_selection == 'max2':
+            _, topk_idxs = grad_norm[0].topk(1)
+            for ele in topk_idxs:
+                word_sids.append(ele)
+        elif self.config.hk_selection == 'sample':
+            _, topk_idxs = grad_norm[0].topk(3)
+            word_sids.append(topk_idxs[Categorical(
+                torch.tensor([0.7, 0.2, 0.1])).sample()])
+        else:
+            raise Exception
 
         for word_sid in word_sids:
             word_grad = embed_grad[0][word_sid]
@@ -301,12 +317,11 @@ class HackWhole(IHack):
             if new_word_vids[i] is not None:
                 new_words[0][word_sids[i]] = new_word_vids[i]
                 exist_change = True
-        
+
         if not exist_change:
             log('Attack failed.')
             return {'code': 404,
-                    'info': 'Neighbours of the selected words have different tags.'}            
-        
+                    'info': 'Neighbours of the selected words have different tags.'}
 
         # if new_word_vid is None:
         #     log('Attack failed.')
@@ -338,7 +353,7 @@ class HackWhole(IHack):
                 raw_arc = 0 if i == 0 else raw_arcs[0][i - 1]
                 att_arc = 0 if i == 0 else att_arcs[0][i - 1]
 
-                relevant_mask = '&' if raw_words[0][att_arc] != new_words[0][att_arc] else ""
+                relevant_mask = '&' if raw_words[0][att_arc] != new_words[0][att_arc] or raw_words_text[i] != new_words_text[i] else ""
                 table.append([
                     i,
                     raw_words_text[i],
@@ -347,7 +362,8 @@ class HackWhole(IHack):
                     tags_text[i],
                     gold_arc,
                     raw_arc,
-                    '>{}{}'.format(att_arc, relevant_mask) if att_arc != raw_arc else '*',
+                    '>{}{}'.format(
+                        att_arc, relevant_mask) if att_arc != raw_arc else '*',
                     grad_norm[0][i].item()
                 ])
             return table
