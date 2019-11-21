@@ -285,6 +285,13 @@ def accuracy(scores: List[List], gold: List):
     return hit(scores, gold, 1)
 
 
+def locate_chunk(num_total,  num_chunk, chunk_id):
+    start = num_total // num_chunk * chunk_id
+    end = num_total // num_chunk * (chunk_id + 1)
+    if chunk_id == num_chunk - 1:
+        end = num_total
+    return start, end
+
 class CherryPicker:
     def __init__(self, lower_is_better):
         self.lower_is_better = lower_is_better

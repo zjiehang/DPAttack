@@ -26,6 +26,7 @@ from dpattack.utils.tag_tool import gen_tag_dict
 from dpattack.utils.vocab import Vocab
 import random
 from config import Config
+from functools import lru_cache
 
 
 # Code for fucking VSCode debug console
@@ -70,7 +71,7 @@ class IHack:
         self.task: ParserTask
 
         self.tagger: PosTagger
-        self.tag_filter: dict
+        self.tag_dict: dict
 
         self.embed_searcher: EmbeddingSearcher
 
@@ -104,7 +105,10 @@ class IHack:
                                     cache=True, path=config.workspace + '/saved_vars')
         self.tag_dict = {k: torch.tensor(v) for k, v in self.tag_dict.items()}
 
-        self.corpus = Corpus.load(config.fdata)
+        if config.hk_training_set == 'on':
+            self.corpus = train_corpus
+        else:
+            self.corpus = Corpus.load(config.fdata)
         dataset = TextDataset(vocab.numericalize(self.corpus, True))
         # set the data loader
         self.loader = DataLoader(dataset=dataset,
@@ -122,24 +126,42 @@ class IHack:
         )
 
         random.seed(1)
+        torch.manual_seed(1)
 
     def hack(self, instance, **kwargs):
         raise NotImplementedError
 
+    @lru_cache(maxsize=None)
+    def __gen_tag_mask(self, tags: tuple, tsr_device, tsr_size):
+        word_idxs = []
+        for tag in tags:
+            if tag in self.tag_dict:
+                word_idxs.extend(self.tag_dict[tag])
+        legal_tag_index = torch.tensor(word_idxs, device=tsr_device)
+        legal_tag_mask = torch.zeros(tsr_size, device=tsr_device)\
+            .index_fill_(0, legal_tag_index, 1.).byte()
+        return legal_tag_mask
+
     @torch.no_grad()
     def find_replacement(self,
-                         changed, must_tag, dist_measure,
+                         changed, must_tags, dist_measure,
                          forbidden_idxs__,
-                         repl_method='tagdict', 
-                         words=None, word_sid=None, # Only need when using a tagger
+                         repl_method='tagdict',
+                         words=None, word_sid=None,  # Only need when using a tagger
                          ) -> (Optional[torch.Tensor], dict):
+        if must_tags is None:
+            must_tags = tuple(self.vocab.tags)
+        if isinstance(must_tags, str):
+            must_tags = (must_tags,)
+        
         if repl_method == 'tagger':
             # Pipeline:
             #    256 minimum dists
             # -> Filtered by a tagger
             # -> Smallest one
-            words = words.repeat(128, words.size(1))
-            dists, idxs = self.embed_searcher.find_neighbours(changed, 128, dist_measure, False)
+            words = words.repeat(64, words.size(1))
+            dists, idxs = self.embed_searcher.find_neighbours(
+                changed, 64, dist_measure, False)
             for i, ele in enumerate(idxs):
                 words[i][word_sid] = ele
             self.tagger.eval()
@@ -147,9 +169,9 @@ class IHack:
             pred_tags = s_tags.argmax(-1)[:, word_sid]
             new_word_vid = None
             for i, ele in enumerate(pred_tags):
-                if self.vocab.tags[ele.item()] == must_tag:
-                    new_word_vid = idxs[i]
-                    if new_word_vid.item() not in forbidden_idxs__:
+                if self.vocab.tags[ele.item()] in must_tags:
+                    if idxs[i] not in forbidden_idxs__:
+                        new_word_vid = idxs[i]
                         break
             return new_word_vid, {"avgd": dists.mean().item(),
                                   "mind": dists.min().item()}
@@ -164,21 +186,25 @@ class IHack:
             #     *[self.vocab.words[idxs[i].item()] for i in range(4)]))
             # show_mean_std(embed[word_vid])
             # show_mean_std(max_grad)
-            dist = {'euc': euc_dist, 'cos': cos_dist}[dist_measure](changed, self.parser.embed.weight)
+            dist = {'euc': euc_dist, 'cos': cos_dist}[
+                dist_measure](changed, self.parser.embed.weight)
             # print('>>> before moving')
             # self.embed_searcher.find_neighbours(embed[word_vid],10, 'euc', True)
             # print('>>> after moving')
             # self.embed_searcher.find_neighbours(changed, 10, 'euc', True)
 
             # Mask illegal words by its POS
-            legal_tag_index = self.tag_dict[must_tag].to(dist.device)
-            legal_tag_mask = dist.new_zeros(dist.size()) \
-                .index_fill_(0, legal_tag_index, 1.).byte()
-            dist.masked_fill_(1 - legal_tag_mask, 1000.)
+            tag_mask = self.__gen_tag_mask(must_tags, dist.device, dist.size())
+
+            dist.masked_fill_(1 - tag_mask, 1000.)
             for ele in forbidden_idxs__:
                 dist[ele] = 1000.
-            new_word_vid = dist.argmin()
-            return new_word_vid, {"avgd": 0, "mind": 0}
+            mindist = dist.min()
+            if abs(mindist - 1000.) < 0.001:
+                new_word_vid = None
+            else:
+                new_word_vid = dist.argmin()
+            return new_word_vid, {}
         elif repl_method == 'bert':
             # Pipeline:
             #    Bert select 256 words

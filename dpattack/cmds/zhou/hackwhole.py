@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from dpattack.libs.luna import (
     Aggregator, CherryPicker, TrainingStopObserver, as_table, cast_list,
     create_folder_for_file, fetch_best_ckpt_name, idx_to_msk, log, log_config,
-    ram_read, ram_write, show_mean_std, time, time_stamp)
+    ram_read, ram_write, show_mean_std, time, time_stamp, locate_chunk)
 from dpattack.libs.luna.public import auto_create
 from dpattack.models import PosTagger, WordParser, WordTagParser
 from dpattack.task import ParserTask
@@ -27,20 +27,25 @@ from dpattack.utils.vocab import Vocab
 from .ihack import IHack, v, HACK_TAGS
 
 
-
-
 class HackWhole(IHack):
 
     def __call__(self, config):
         if config.logf == 'on':
-            log_config('hackwhole-{}-{}-{}'.format(config.hk_loss_based_on,
-                                                   config.hk_step_size,
-                                                   config.hk_pgd_freq),
+            if config.hk_use_worker == 'on':
+                worker_info = "-{}@{}".format(config.hk_num_worker,
+                                              config.hk_worker_id)
+            else:
+                worker_info = ""
+            log_config('hackwhole-{}-{}{}'.format(config.input, config.hk_tag_type, worker_info),
                        log_path=config.workspace,
                        default_target='cf')
+            from dpattack.libs.luna import log
         else:
             log = print
 
+        log('[General Settings]')
+        log(config)
+        log('[Hack Settings]')
         for arg in config.kwargs:
             if arg.startswith('hk'):
                 log(arg, '\t', config.kwargs[arg])
@@ -48,20 +53,33 @@ class HackWhole(IHack):
 
         self.setup(config)
 
+        if self.config.hk_use_worker == 'on':
+            start_sid, end_sid = locate_chunk(
+                len(self.loader), self.config.hk_num_worker, self.config.hk_worker_id)
+            log('Run code on a chunk [{}, {})'.format(start_sid, end_sid))
+
         raw_metrics = ParserMetric()
         attack_metrics = ParserMetric()
 
         agg = Aggregator()
         for sid, (words, tags, chars, arcs, rels) in enumerate(self.loader):
-            # if sid in [1, 2]:
+            # if sid in [0, 1, 2, 3, 4]:
             #     continue
-            if sid > config.hk_sent_num:
+            # if sid > config.hk_sent_num:
+            #     continue
+            if self.config.hk_use_worker == 'on':
+                if sid < start_sid or sid >= end_sid:
+                    continue
+            if self.config.hk_training_set == 'on' and words.size(1) > 50:
+                log('Skip sentence {} whose length is {}.'.format(sid, words.size(1)))
                 continue
 
             words_text = self.vocab.id2word(words[0])
             tags_text = self.vocab.id2tag(tags[0])
             log('****** {}: \n{}\n{}'.format(
                 sid, " ".join(words_text), " ".join(tags_text)))
+
+            # hact it!
             result = self.hack(instance=(words, tags, chars, arcs, rels))
 
             # aggregate information
@@ -96,6 +114,7 @@ class HackWhole(IHack):
     def hack(self, instance):
         words, tags, chars, arcs, rels = instance
         _, raw_metric = self.task.evaluate([(words, tags, chars, arcs, rels)])
+        _, raw_arcs, _ = self.task.predict([(words, tags, None)])
 
         # Setup some states before attacking a sentence
         # WARNING: Operations on variables naming like "abc__" passed to a function
@@ -115,11 +134,14 @@ class HackWhole(IHack):
         t0 = time.time()
         picker = CherryPicker(lower_is_better=True)
         # iter 0 -> raw
-        picker.add(raw_metric, 'No modification to the raw sentence')
+        picker.add(raw_metric, {
+            "num_changed": 0,
+            "logtable": 'No modification'
+        })
         for iter_id in range(1, self.config.hk_steps):
             result = self.single_hack(
                 var_words, tags, arcs, rels,
-                raw_words=raw_words, raw_metric=raw_metric,
+                raw_words=raw_words, raw_metric=raw_metric, raw_arcs=raw_arcs,
                 verbose=False,
                 max_change_num=max_change_num,
                 iter_id=iter_id,
@@ -128,8 +150,8 @@ class HackWhole(IHack):
             )
             # Fail
             if result['code'] == 404:
-                log('Stop in step {}, logtable: {}'.format(
-                    iter_id, result['logtable']))
+                log('Stop in step {}, info: {}'.format(
+                    iter_id, result['info']))
                 break
             # Success
             if result['code'] == 200:
@@ -191,9 +213,11 @@ class HackWhole(IHack):
             raise Exception
         return ram_read('embed_grad')
 
+    # TODO: 1. Dynamically increase the step size?
+    # TODO: 2. Choose some words to change together?
     def single_hack(self,
                     words, tags, arcs, rels,
-                    raw_words, raw_metric,
+                    raw_words, raw_metric, raw_arcs,
                     forbidden_idxs__,
                     change_positions__,
                     verbose=False,
@@ -211,7 +235,7 @@ class HackWhole(IHack):
         # e.g., the uas of projected version may be 83.33%
         # while under the case of the unprojected version, the loss is 0.
         if torch.sum(embed_grad) == 0.0:
-            return {"code": 404, "info": "Loss is already zero."}
+            return {"code": 404, "info": "Loss is zero."}
 
         """
             Select and change a word
@@ -219,7 +243,7 @@ class HackWhole(IHack):
         grad_norm = embed_grad.norm(dim=2)
 
         position_mask = [False for _ in range(words.size(1))]
-        # Mask some positions by POS
+        # Mask some positions by POS & <UNK>
         for i in range(sent_len):
             if self.vocab.tags[tags[0][i]] not in HACK_TAGS[self.config.hk_tag_type]:
                 position_mask[i] = True
@@ -229,42 +253,68 @@ class HackWhole(IHack):
                 if i not in change_positions__:
                     position_mask[i] = True
         if all(position_mask):
-            return {"code": 404, "info": "No valid word to replace"}
+            return {"code": 404, "info": "Constrained by tags, no valid word to replace."}
 
         for i in range(sent_len):
             if position_mask[i]:
                 grad_norm[0][i] = -(grad_norm[0][i] + 1000)
 
         # Select a word and forbid itself
-        word_sid = grad_norm[0].argmax()
-        max_grad = embed_grad[0][word_sid]
+        word_sids = []  # type: list[torch.Tensor]
+        word_vids = []  # type: list[torch.Tensor]
+        new_word_vids = []  # type: list[torch.Tensor]
 
-        word_vid = words[0][word_sid]
-        emb_to_rpl = self.parser.embed.weight[word_vid]
-        forbidden_idxs__.append(word_vid.item())
-        change_positions__.add(word_sid.item())
-        # print(self.change_positions__)
+        _, topk_idxs = grad_norm[0].topk(2)
+        for ele in topk_idxs:
+            word_sids.append(ele)
 
-        # Find a word to change
-        delta = max_grad / torch.norm(max_grad) * self.config.hk_step_size
-        changed = emb_to_rpl - delta
+        for word_sid in word_sids:
+            word_grad = embed_grad[0][word_sid]
 
-        must_tag = self.vocab.tags[tags[0][word_sid].item()]
-        new_word_vid, repl_info = self.find_replacement(
-            changed, must_tag, dist_measure=self.config.hk_dist_measure,
-            forbidden_idxs__=forbidden_idxs__,
-            repl_method=self.config.hk_repl_method,
-            words=words, word_sid=word_sid
-        )
+            word_vid = words[0][word_sid]
+            emb_to_rpl = self.parser.embed.weight[word_vid]
+            forbidden_idxs__.append(word_vid.item())
+            change_positions__.add(word_sid.item())
+            # print(self.change_positions__)
 
-        # A forbidden word maybe chosen if all words are forbidden(1000.)
-        if new_word_vid is None or new_word_vid.item() in forbidden_idxs__:
-            log('Attack failed.')
-            return {'code': 404,
-                    'info': "Selected word are forbidden"}
+            # Find a word to change with dynamically step
+            # Note that it is possible that all words found are not as required, e.g.
+            #   all neighbours have different tags.
+            delta = word_grad / \
+                torch.norm(word_grad) * self.config.hk_step_size
+            changed = emb_to_rpl - delta
+
+            must_tag = self.vocab.tags[tags[0][word_sid].item()]
+            new_word_vid, repl_info = self.find_replacement(
+                changed, must_tag, dist_measure=self.config.hk_dist_measure,
+                forbidden_idxs__=forbidden_idxs__,
+                repl_method=self.config.hk_repl_method,
+                words=words, word_sid=word_sid
+            )
+
+            word_vids.append(word_vid)
+            new_word_vids.append(new_word_vid)
 
         new_words = words.clone()
-        new_words[0][word_sid] = new_word_vid
+        exist_change = False
+        for i in range(len(word_vids)):
+            if new_word_vids[i] is not None:
+                new_words[0][word_sids[i]] = new_word_vids[i]
+                exist_change = True
+        
+        if not exist_change:
+            log('Attack failed.')
+            return {'code': 404,
+                    'info': 'Neighbours of the selected words have different tags.'}            
+        
+
+        # if new_word_vid is None:
+        #     log('Attack failed.')
+        #     return {'code': 404,
+        #             'info': 'Neighbours of the selected words have different tags.'}
+
+        # new_words = words.clone()
+        # new_words[0][word_sid] = new_word_vid
 
         """
             Evaluating the result
@@ -280,13 +330,15 @@ class HackWhole(IHack):
             new_words_text = [self.vocab.words[i.item()] for i in new_words[0]]
             raw_words_text = [self.vocab.words[i.item()] for i in raw_words[0]]
             tags_text = [self.vocab.tags[i.item()] for i in tags[0]]
-            pred_tags, pred_arcs, pred_rels = self.task.predict(
-                [(new_words, tags, None)])
+            _, att_arcs, _ = self.task.predict([(new_words, tags, None)])
 
             table = []
             for i in range(sent_len):
                 gold_arc = int(arcs[0][i])
-                pred_arc = 0 if i == 0 else pred_arcs[0][i - 1]
+                raw_arc = 0 if i == 0 else raw_arcs[0][i - 1]
+                att_arc = 0 if i == 0 else att_arcs[0][i - 1]
+
+                relevant_mask = '&' if raw_words[0][att_arc] != new_words[0][att_arc] else ""
                 table.append([
                     i,
                     raw_words_text[i],
@@ -294,7 +346,8 @@ class HackWhole(IHack):
                         new_words_text[i]) if raw_words_text[i] != new_words_text[i] else "*",
                     tags_text[i],
                     gold_arc,
-                    '>{}'.format(pred_arc) if pred_arc != gold_arc else '*',
+                    raw_arc,
+                    '>{}{}'.format(att_arc, relevant_mask) if att_arc != raw_arc else '*',
                     grad_norm[0][i].item()
                 ])
             return table
@@ -302,17 +355,21 @@ class HackWhole(IHack):
         if verbose:
             print('$$$$$$$$$$$$$$$$$$$$$$$$$$$')
             print('Iter {}'.format(iter_id))
-            # print('After Attacking: \n\t{}\n\t{}'.format(
-            #     " ".join(new_words_text), " ".join(tags_text)))
-            # print('{} --> {}'.format(
-            #     self.vocab.words[word_vid.item()],
-            #     self.vocab.words[new_word_vid.item()]
-            # ))
             print(tabulate(_gen_log_table(), floatfmt=('.6f')))
             print('^^^^^^^^^^^^^^^^^^^^^^^^^^^')
 
-        log('iter {}, uas {:.4f}, mind {:6.3f}, avgd {:6.3f}'.format(
-            iter_id, metric.uas, repl_info['mind'], repl_info['avgd']))
+        rpl_detail = ""
+        for i in range(len(word_sids)):
+            if new_word_vids[i] is not None:
+                rpl_detail += "{}:{}->{}  ".format(
+                    self.vocab.words[raw_words[0][word_sids[i]].item()],
+                    self.vocab.words[word_vids[i].item()],
+                    self.vocab.words[new_word_vids[i].item()])
+        log("iter {}, uas {:.4f}, ".format(iter_id, metric.uas),
+            "mind {:6.3f}, avgd {:6.3f}, ".format(
+                repl_info['mind'], repl_info['avgd']) if 'mind' in repl_info else '',
+            rpl_detail
+            )
         if metric.uas >= raw_metric.uas - .00001:
             logtable = 'Nothing'
         else:

@@ -1,12 +1,14 @@
 # -*- coding: utf-8 -*-
 
-from dpattack.utils.metric import ParserMetric, TaggerMetric
+from typing import List, Optional, Tuple
 
 import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pad_sequence
+
+from dpattack.utils.metric import ParserMetric, TaggerMetric
 from dpattack.utils.parser_helper import is_chars_judger
-from typing import Optional, List, Tuple
+from dpattack.libs.luna import cast_list
 
 
 class Task(object):
@@ -86,7 +88,7 @@ class ParserTask(Task):
     # WARNING: DIRTY CODE >>>>>>>>>>>>>>>>>>>>>>>>>>>
     @torch.no_grad()
     def partial_evaluate(self, instance: tuple,
-                         mask_idxs: Optional[List[int]] = None,
+                         mask_idxs: List[int],
                          punct=False, tagger=None):
         self.model.eval()
 
@@ -114,10 +116,23 @@ class ParserTask(Task):
         gold_arcs, gold_rels = arcs[mask], rels[mask]
         pred_arcs, pred_rels = self.decode(s_arc, s_rel)
 
-        loss += self.get_loss(s_arc, s_rel, gold_arcs, gold_rels)
+        exmask = torch.ones_like(gold_arcs, dtype=torch.uint8)
+
+        for i, ele in enumerate(cast_list(gold_arcs)):
+            if ele in mask_idxs:
+                exmask[i] = 0
+        for i, ele in enumerate(cast_list(pred_arcs)):
+            if ele in mask_idxs:
+                exmask[i] = 0
+        gold_arcs = gold_arcs[exmask]
+        pred_arcs = pred_arcs[exmask]
+        gold_rels = gold_rels[exmask]
+        pred_rels = pred_rels[exmask]
+
+        # loss += self.get_loss(s_arc, s_rel, gold_arcs, gold_rels)
         metric(pred_arcs, pred_rels, gold_arcs, gold_rels)
 
-        return loss, metric
+        return metric
     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     @torch.no_grad()
