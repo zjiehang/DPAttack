@@ -18,5 +18,5 @@ class CONSTANT(object):
                       'VB','VBD','VBG','VBN','VBP','VBZ',
                       'RB','RBR','RBS']
 
-
     COMMA = ','
+    PUNCT = 'punct'
