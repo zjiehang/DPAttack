@@ -4,6 +4,7 @@ from dpattack.utils.corpus import Corpus
 from dpattack.utils.vocab import Vocab
 from collections import defaultdict
 import torch
+from nltk.tag import CRFTagger
 
 
 def train_gram_tagger(train_corpus: Corpus, ngram=1):
@@ -18,6 +19,13 @@ def train_gram_tagger(train_corpus: Corpus, ngram=1):
     return tagger
 
 
+def train_crf_tagger(train_corpus: Corpus, model_file='crfmodel'):
+    train_sents = gen_tagged_sents(train_corpus)
+    crf_tagger = CRFTagger()
+    crf_tagger.train(train_sents, model_file)
+    return crf_tagger
+
+
 def gen_tagged_sents(corpus: Corpus):
     all_sents = []
     for sentence in corpus:
@@ -28,16 +36,63 @@ def gen_tagged_sents(corpus: Corpus):
     return all_sents
 
 
+if __name__ == "__main__":
+    train_corpus = Corpus.load(
+        "/disks/sdb/zjiehang/zhou_data/ptb/ptb_train_3.3.0.sd")
+    test_corpus = Corpus.load(
+        "/disks/sdb/zjiehang/zhou_data/ptb/ptb_test_3.3.0.sd")
 
-# train_corpus = Corpus.load(
-#     "/disks/sdb/zjiehang/zhou_data/ptb/ptb_train_3.3.0.sd")
-# vocab = torch.load("/disks/sdb/zjiehang/zhou_data/ptb/vocab")
-# gen_tag_dict(train_corpus, vocab)
-# test_corpus = Corpus.load(
-#     "/disks/sdb/zjiehang/zhou_data/ptb/ptb_test_3.3.0.sd")
+    # vocab = torch.load("/disks/sdb/zjiehang/zhou_data/ptb/vocab")
+    # gen_tag_dict(train_corpus, vocab)
 
-# tagger = GramTagger(test_corpus, 1)
-# print(tagger.tag_sents(GramTagger.gen_tagged_sents(test_corpus)))
+    """
+        Below is performance benchmark of different taggers.
+    """
+    # tagger = train_gram_tagger(train_corpus, 1)   # 0.9279514501446616
+    # tagger = train_gram_tagger(train_corpus, 2)   # 0.947216145649566
+    # tagger = train_gram_tagger(train_corpus, 3)   # 0.9476395455507727
+    # tagger = train_crf_tagger(train_corpus)       # 0.9715263566438501  -> long training time
+    ## tagger = CRFTagger()
+    # tagger.set_model_file("/disks/sdb/zjiehang/zhou_data/saved_models/crftagger")
+    # print(tagger.evaluate(gen_tagged_sents(test_corpus)))
+
+    """
+        Below is time benchmark of different taggers tested on 2048 sentences.
+               for-loop   batch
+        CRF    0.915      0.936
+        TRI    0.723      0.661
+        BI     0.526      0.495
+        UNI    0.283      0.278
+    """
+    # tagger = train_gram_tagger(train_corpus, 1)
+    # tagger = CRFTagger()
+    # tagger.set_model_file("/disks/sdb/zjiehang/zhou_data/saved_models/crftagger")
+    # test_sents = gen_tagged_sents(test_corpus)
+    # test_sents = [[ele[0] for ele in sent] for sent in test_sents]
+    # from dpattack.libs.luna import time_record
+    # with time_record():
+    #     for i in range(2048):
+    #         tagger.tag_sents(test_sents[i:i+1])  # crf 0.915 seconds 0.723   0.526  0.283
+    # with time_record():
+    #     tagger.tag_sents(test_sents[:2048])      # crf 0.936 seconds 0.661   0.495  0.278
+
+    # tagger = nltk.BigramTagger([[('the', 'dt'), ('work', 'nn'), ('of', 'in')]])
+    # print(tagger.tag_sents([('the', 'end', 'of')]))
+
+    sent = [
+        "at <UNK> p.m. , at the throw of the `` cooling off '' period , the average was down <UNK> points .".split(" ")]
+
+    tagger = CRFTagger()
+    tagger.set_model_file(
+        "/disks/sdb/zjiehang/zhou_data/saved_models/crftagger")
+    print(tagger.tag_sents(sent))
+
+    from dpattack.libs.luna import auto_create
+    tagger = auto_create("trigram_tagger",
+                         lambda: train_gram_tagger(
+                             train_corpus, ngram=3),
+                         cache=True, path='/disks/sdb/zjiehang/zhou_data/saved_vars')
+    print(tagger.tag_sents(sent))
 
 
 def gen_tag_dict(corpus: Corpus, vocab: Vocab,
@@ -136,5 +191,3 @@ def gen_tag_dict(corpus: Corpus, vocab: Vocab,
             print(vocab.tags[i], ":", ", ".join([vocab.words[e]
                                                  for e in tag_dict[i][:10]]))
     return dict(tag_dict)
-
-

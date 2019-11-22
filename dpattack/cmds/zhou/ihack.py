@@ -27,7 +27,7 @@ from dpattack.utils.vocab import Vocab
 import random
 from config import Config
 from functools import lru_cache
-from nltk import TrigramTagger
+from nltk import TrigramTagger, CRFTagger
 
 
 # Code for fucking VSCode debug console
@@ -72,7 +72,8 @@ class IHack:
         self.task: ParserTask
 
         self.nn_tagger: PosTagger
-        self.gram_tagger: TrigramTagger
+        self.trigram_tagger: TrigramTagger
+        self.crf_tagger: CRFTagger
         self.tag_dict: dict
 
         self.embed_searcher: EmbeddingSearcher
@@ -93,6 +94,7 @@ class IHack:
         print("Load the models")
         vocab = torch.load(config.vocab)  # type: Vocab
         parser = load_parser(fetch_best_ckpt_name(config.parser_model))
+
         self.nn_tagger = PosTagger.load(
             fetch_best_ckpt_name(config.tagger_model))
 
@@ -108,10 +110,13 @@ class IHack:
                                     cache=True, path=config.workspace + '/saved_vars')
         self.tag_dict = {k: torch.tensor(v) for k, v in self.tag_dict.items()}
 
-        self.gram_tagger = auto_create("trigram_tagger",
-                                       lambda: train_gram_tagger(
-                                           train_corpus, ngram=3),
-                                       cache=True, path=config.workspace + '/saved_vars')
+        self.trigram_tagger = auto_create("trigram_tagger",
+                                          lambda: train_gram_tagger(
+                                              train_corpus, ngram=3),
+                                          cache=True, path=config.workspace + '/saved_vars')
+
+        self.crf_tagger = CRFTagger()
+        self.crf_tagger.set_model_file(config.crf_tagger_path)
 
         if config.hk_training_set == 'on':
             self.corpus = train_corpus
@@ -183,19 +188,26 @@ class IHack:
                         break
             return new_word_vid, {"avgd": dists.mean().item(),
                                   "mind": dists.min().item()}
-        elif repl_method == '3gram':
+        elif repl_method == '3gram' or 'crf':
             # Pipeline:
             #    256 minimum dists
-            # -> Filtered by a 3-GRAM tagger
+            # -> Filtered by a Statistical tagger
             # -> Smallest one
-            prefix = (self.vocab.words[words[0][word_sid - 2].item()],
-                      self.vocab.words[words[0][word_sid - 1].item()])
+            tagger = self.trigram_tagger if repl_method == '3gram' else self.crf_tagger
+            word_texts = self.vocab.id2word(words)
+            word_sid = word_sid.item()
+
             dists, idxs = self.embed_searcher.find_neighbours(
                 changed, 64, dist_measure, False)
-            sents = [(*prefix, self.vocab.words[ele]) for ele in cast_list(idxs)]
 
-            pred_tags = self.gram_tagger.tag_sents(sents)
-            s_tags = [ele[2][1] for ele in pred_tags]
+            cands = []
+            for ele in cast_list(idxs):
+                cand = word_texts.copy()
+                cand[word_sid] = self.vocab.words[ele]
+                cands.append(cand)
+
+            pred_tags = self.trigram_tagger.tag_sents(cands)
+            s_tags = [ele[word_sid][1] for ele in pred_tags]
 
             new_word_vid = None
             for i, ele in enumerate(s_tags):
