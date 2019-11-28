@@ -1,7 +1,6 @@
 # -*- coding: utf-8 -*-
 import math
 import random
-import re
 from collections import defaultdict
 from contextlib import contextmanager
 from typing import Dict, List, Optional, Union
@@ -10,12 +9,11 @@ import torch
 from tabulate import tabulate
 from torch.utils.data import DataLoader
 
-from dpattack.libs.luna import (Aggregator, CherryPicker, Color,
-                                TrainingStopObserver, as_table, auto_create,
-                                cast_list, fetch_best_ckpt_name, flt2str,
-                                idx_to_msk, log, log_config, ram_append,
-                                ram_pop, ram_read, ram_reset, ram_write,
-                                show_mean_std, show_num_list, time, ram_has)
+from dpattack.libs.luna import (Aggregator, CherryPicker, TrainingStopObserver,
+                                as_table, auto_create, cast_list,
+                                fetch_best_ckpt_name, idx_to_msk, log,
+                                log_config, ram_pop, ram_write, show_mean_std,
+                                time)
 from dpattack.models import PosTagger, WordParser, WordTagParser
 from dpattack.task import ParserTask
 from dpattack.utils.corpus import Corpus, Sentence, sent_print
@@ -31,10 +29,25 @@ from .ihack import HACK_TAGS, IHack, v
 from .treeops import gen_spans
 
 
-class HackSubtree(IHack):
+class HackOutside(IHack):
 
     def __call__(self, config):
-        self.init_logger(config)
+        if config.logf == 'on':
+            log_config('hackoutside',
+                       log_path=config.workspace,
+                       default_target='cf')
+            from dpattack.libs.luna import log
+        else:
+            log = print
+
+        log('[General Settings]')
+        log(config)
+        log('[Hack Settings]')
+        for arg in config.kwargs:
+            if arg.startswith('hks'):
+                log(arg, '\t', config.kwargs[arg])
+        log('------------------')
+
         self.setup(config)
 
         raw_metrics = ParserMetric()
@@ -43,8 +56,6 @@ class HackSubtree(IHack):
         agg = Aggregator()
         for sid, (words, tags, chars, arcs, rels) in enumerate(self.loader):
             # if sid > 100:
-            #     continue
-            # if sid < 46:
             #     continue
 
             words_text = self.vocab.id2word(words[0])
@@ -70,34 +81,33 @@ class HackSubtree(IHack):
                 ("changed", result['num_changed'])
             )
 
-            # # WARNING: SOME SENTENCE NOT SHOWN!
+            # WARNING: SOME SENTENCE NOT SHOWN!
             if result:
                 log('Show result from iter {}:'.format(result['best_iter']))
                 log(result['logtable'])
 
             log('Aggregated result: {} --> {}, '
                 'iters(avg) {:.1f}, time(avg) {:.1f}s, '
-                'fail rate {:.2f} ({}/{}), best_iter(avg) {:.1f}, best_iter(std) {:.1f}, '
+                'fail rate {:.2f}, best_iter(avg) {:.1f}, best_iter(std) {:.1f}, '
                 'changed(avg) {:.1f}'.format(
                     raw_metrics, attack_metrics,
                     agg.mean('iters'), agg.mean('time'),
-                    agg.mean('fail'), agg.sum('fail'), agg.size,
-                    agg.mean('best_iter'), agg.std('best_iter'),
+                    agg.mean('fail'), agg.mean(
+                        'best_iter'), agg.std('best_iter'),
                     agg.mean('changed')
                 ))
             log()
 
-            # exit()  # HIGHLIGHT:
+            # exit()
 
-    def compute_margin(self, instance, mask_idxs=[]):
+    def backward_loss(self, instance, mask_idxs) -> torch.Tensor:
         self.parser.zero_grad()
         words, tags, chars, arcs, rels = instance
-        s_arc, s_rel = self.parser(words, tags)
-
         mask = words.ne(self.vocab.pad_index)
         mask[0, 0] = 0
         for mask_idx in mask_idxs:
             mask[0, mask_idx] = 0
+        s_arc, s_rel = self.parser(words, tags)
         s_arc, s_rel = s_arc[mask], s_rel[mask]
         gold_arcs, gold_rels = arcs[mask], rels[mask]  # shape like [7,7,7,0,3]
 
@@ -105,136 +115,55 @@ class HackSubtree(IHack):
         msk_gold_arc = idx_to_msk(gold_arcs, num_classes=s_arc.size(1))
         s_gold = s_arc[msk_gold_arc]
         s_other = s_arc.masked_fill(msk_gold_arc, -1000.)
-        max_s_other, _ = s_other.max(1)
+        max_s_othe__global_ramamr.max(1)
         margin = s_gold - max_s_other
-        return margin
-
-    def backward_loss(self, instance, mask_idxs) -> torch.Tensor:
-        # margin = gold - max_non_gold, bigger is better.
-        # when attacking, we attempt to decrease it.
-        margin = self.compute_margin(instance, mask_idxs)
         margin[margin < -1] = -1
-        log("\t> ", flt2str(margin, cat=" "), color=Color.red)
-
-        # loss = margin[]
-        if self.config.hks_loss == 'sum':
-            loss = margin.sum()
-        elif self.config.hks_loss == 'min':
-            loss = margin[margin > 0].min()
-        else:
-            raise Exception()
+        loss = margin.sum()
+        # raw_embed = parser.embed(raw_words)
+        # change_penalty = torch.norm(current_embed - raw_embed,
+        #                             p=2, dim=1).sum()
+        # print(loss.item(), change_penalty.item())
+        # loss += change_penalty
         loss.backward()
 
         return ram_pop('embed_grad')
 
-    def select_spans(self, instance, sentence):
-        minl = self.config.hks_min_span_len
-        maxl = self.config.hks_max_span_len
-        gap = self.config.hks_span_gap
-        if self.config.hks_span_selection == 'vul':
-            # Compute the ``vulnerable'' values of each words
-            words, tags, chars, arcs, rels = instance
-            sent_len = words.size(1)
-
-            # The returned margins does not contain <ROOT>
-            margins = self.compute_margin(instance)
-            log(margins)
-
-            # Count the vulnerable words in each span,
-            # Select the most vulerable span as target.
-            vul_margins = [0] + [1 if 0 < ele < 1 else 0 for ele in margins]
-            spans = gen_spans(sentence)
-            span_vuls = list()
-            span_ratios = list()
-            for span in spans:
-                span_vuls.append(sum(vul_margins[span[0]: span[1] + 1]))
-                span_ratios.append(span_vuls[-1] / (span[1] + 1 - span[0]))
-            tgt_picker = CherryPicker(lower_is_better=False)
-            for i in range(sent_len):
-                if minl <= spans[i][1] + 1 - spans[i][0] <= maxl and span_vuls[i] > 0:
-                    tgt_picker.add(span_vuls[i], spans[i])
-            if tgt_picker.size == 0:
-                log('Target span not found')
-                return None
-            _, tgt_span_vul, tgt_span = tgt_picker.select_best_point()
-
-            # Select the closest span as the src span
-            src_span = None
-            src_picker = CherryPicker(lower_is_better=True)
-            for span in spans:
-                if minl <= span[1] + 1 - span[0] <= maxl:
-                    if tgt_span[0] - span[1] > 0:
-                        st_gap = tgt_span[0] - span[1]
-                    elif gap or span[0] - tgt_span[1] > 0:
-                        st_gap = span[0] - tgt_span[1]
-                    if st_gap >= gap:
-                        src_picker.add(st_gap, span)
-            if src_picker.size == 0:
-                log('Source span not found')
-                return None
-            _, _, src_span = src_picker.select_best_point()
-            return src_span, tgt_span
-
-        elif self.config.hks_span_selection == "far":
-            spans = gen_spans(sentence)
-            valid_spans = [span for span in spans if minl < len(span) < maxl]
-            if len(valid_spans) >= 2 and valid_spans[-1][0] > valid_spans[0][1]:
-                src_span = valid_spans[0]
-                tgt_span = valid_spans[-1]
-            else:
-                log('Not enough subtrees')
-                return None
-            return src_span, tgt_span
-
-        else:
-            raise Exception
-
     def hack(self, instance, sentence):
-        ram_reset("hk")
         words, tags, chars, arcs, rels = instance
         sent_len = words.size(1)
-
-        ram_append('total', 1)
-        selected = self.select_spans(instance, sentence)
-        if selected is not None:
-            ram_append('good', 1)
-        if ram_has('good'):
-            log(sum(ram_read('good')), sum(ram_read('total')))
-        # return
-        if selected is None:
-            return
-        src_span, tgt_span = selected
-
+        spans = gen_spans(sentence)
+        valid_spans = list(
+            filter(lambda ele: 5 <= ele[1] - ele[0] <= 8, spans))
+        if len(valid_spans) == 0:
+            log("Attack error, no valid spans".format())
+            return None
+        chosen_span = random.choice(valid_spans)
+        # chosen_span = (18, 24)
+        if chosen_span[1] - chosen_span[0] + 1 > 0.5 * sent_len:
+            return None
         # sent_print(sentence, 'tablev')
         # print('spans', spans)
         # print('valid', valid_spans)
+        log('chosen span: ', chosen_span,
+            ' '.join(self.vocab.id2word(words[0])[chosen_span[0]: chosen_span[1] + 1]))
 
         raw_words = words.clone()
         var_words = words.clone()
         words_text = self.vocab.id2word(words[0])
         tags_text = self.vocab.id2tag(tags[0])
-        log('chosen span: ',
-            src_span, ' '.join(words_text[src_span[0]: src_span[1] + 1]),
-            tgt_span, ' '.join(words_text[tgt_span[0]: tgt_span[1] + 1]))
 
         # eval_idxs = [eval_idx for eval_idx in range(sent_len)
         #               if not chosen_span[0] <= eval_idx <= chosen_span[1]]
-        # mask_idxs = list(range(tgt_span[0], tgt_span[1] + 1))
-        src_idxs = list(range(src_span[0], src_span[1] + 1))
-        tgt_idxs = list(range(tgt_span[0], tgt_span[1] + 1))
-
-        ex_tgt_idxs = list(range(tgt_span[0])) + \
-            list(range(tgt_span[1] + 1, sent_len))
+        mask_idxs = list(range(chosen_span[0], chosen_span[1] + 1))
         raw_metric = self.task.partial_evaluate(
             instance=(raw_words, tags, None, arcs, rels),
-            mask_idxs=ex_tgt_idxs,
-            mst=self.config.hks_mst == 'on')
+            mask_idxs=mask_idxs)
         _, raw_arcs, _ = self.task.predict([(raw_words, tags, None)])
 
         forbidden_idxs__ = [self.vocab.unk_index, self.vocab.pad_index]
         change_positions__ = set()
-        if isinstance(self.config.hks_max_change, int):
-            max_change_num = self.config.hks_max_change
+        if isinstance(self.config.hko_max_change, int):
+            max_change_num = self.config.hko_max_change
         elif isinstance(self.config.hk_max_change, float):
             max_change_num = int(self.config.hk_max_change * words.size(1))
         else:
@@ -242,17 +171,11 @@ class HackSubtree(IHack):
 
         picker = CherryPicker(lower_is_better=True)
         t0 = time.time()
-        picker.add(raw_metric, {
-            "num_changed": 0,
-            "logtable": 'No modification'
-        })
-        log('iter -1, uas {:.4f}'.format(raw_metric.uas))
-        for iter_id in range(self.config.hks_steps):
+        for iter_id in range(self.config.hko_steps):
             result = self.single_hack(
                 instance=(var_words, tags, None, arcs, rels),
                 raw_words=raw_words, raw_metric=raw_metric, raw_arcs=raw_arcs,
-                src_idxs=src_idxs,
-                tgt_idxs=tgt_idxs,
+                mask_idxs=mask_idxs,
                 iter_id=iter_id,
                 forbidden_idxs__=forbidden_idxs__,
                 change_positions__=change_positions__,
@@ -280,7 +203,7 @@ class HackSubtree(IHack):
         }
 
     def single_hack(self, instance,
-                    src_idxs, tgt_idxs,
+                    mask_idxs,
                     iter_id,
                     raw_words, raw_metric, raw_arcs,
                     forbidden_idxs__: list,
@@ -291,16 +214,14 @@ class HackSubtree(IHack):
         sent_len = words.size(1)
 
         # Backward loss
-        ex_tgt_idxs = [_ for _ in range(sent_len) if _ not in tgt_idxs]
-        embed_grad = self.backward_loss(
-            instance=instance, mask_idxs=ex_tgt_idxs)
+        embed_grad = self.backward_loss(instance=instance, mask_idxs=mask_idxs)
 
         grad_norm = embed_grad.norm(dim=2)
 
         position_mask = [False for _ in range(words.size(1))]
         # Mask some positions
         for i in range(sent_len):
-            if i not in src_idxs or rels[0][i].item() == self.vocab.rel_dict['punct']:
+            if i not in mask_idxs or rels[0][i].item() == self.vocab.rel_dict['punct']:
                 position_mask[i] = True
         # Check if the number of changed words exceeds the max value
         if len(change_positions__) >= max_change_num:
@@ -319,7 +240,7 @@ class HackSubtree(IHack):
         word_vids = []  # type: list[torch.Tensor]
         new_word_vids = []  # type: list[torch.Tensor]
 
-        _, topk_idxs = grad_norm[0].topk(min(max_change_num, len(src_idxs)))
+        _, topk_idxs = grad_norm[0].topk(max_change_num)
         for ele in topk_idxs:
             word_sids.append(ele)
 
@@ -330,31 +251,23 @@ class HackSubtree(IHack):
 
             # Find a word to change
             delta = word_grad / \
-                torch.norm(word_grad) * self.config.hks_step_size
+                torch.norm(word_grad) * self.config.hko_step_size
             changed = emb_to_rpl - delta
 
-            tag_type = self.config.hks_constraint
-            if tag_type == 'any':
-                must_tag = None
-            elif tag_type == 'same':
-                must_tag = self.vocab.tags[tags[0][word_sid].item()]
-            elif re.match("[njvri]*", tag_type):
-                must_tag = HACK_TAGS[tag_type]
-            else:
-                raise Exception
+            # must_tag = self.vocab.tags[tags[0][word_sid].item()]
+            must_tag = None
+            # must_tag = HACK_TAGS['njr']
+            # must_tag = 'CD'
             forbidden_idxs__.append(word_vid)
             change_positions__.add(word_sid.item())
             new_word_vid, repl_info = self.find_replacement(
-                changed, must_tag, dist_measure=self.config.hks_dist_measure,
+                changed, must_tag, dist_measure=self.config.hko_dist_measure,
                 forbidden_idxs__=forbidden_idxs__,
                 repl_method='tagdict',
                 words=words, word_sid=word_sid
             )
             word_vids.append(word_vid)
             new_word_vids.append(new_word_vid)
-
-            # log(delta @ (self.parser.embed.weight[new_word_vid] - self.parser.embed.weight[word_vid]))
-            # log()
 
         new_words = words.clone()
         for i in range(len(word_vids)):
@@ -368,32 +281,24 @@ class HackSubtree(IHack):
         # print([self.vocab.words[ele] for ele in self.forbidden_idxs__])
         metric = self.task.partial_evaluate(
             instance=(new_words, tags, None, arcs, rels),
-            mask_idxs=ex_tgt_idxs,
-            mst=self.config.hks_mst == 'on')
+            mask_idxs=mask_idxs)
 
         def _gen_log_table():
             new_words_text = [self.vocab.words[i.item()] for i in new_words[0]]
             raw_words_text = [self.vocab.words[i.item()] for i in raw_words[0]]
             tags_text = [self.vocab.tags[i.item()] for i in tags[0]]
             att_tags, att_arcs, att_rels = self.task.predict(
-                [(new_words, tags, None)],
-                mst=self.config.hks_mst == 'on')
+                [(new_words, tags, None)])
 
             table = []
             for i in range(sent_len):
                 gold_arc = int(arcs[0][i])
                 raw_arc = 0 if i == 0 else raw_arcs[0][i - 1]
                 att_arc = 0 if i == 0 else att_arcs[0][i - 1]
-                if i in src_idxs:
-                    span_symbol = "Ⓢ"
-                elif i in tgt_idxs:
-                    span_symbol = "Ⓣ"
-                else:
-                    span_symbol = ""
-                mask_symbol = '&' if att_arc in tgt_idxs or i in tgt_idxs else ""
+                mask_symbol = '&' if att_arc in mask_idxs or i in mask_idxs else ""
 
                 table.append([
-                    "{}{}".format(i, span_symbol),
+                    "{}{}".format(i, "@" if i in mask_idxs else ""),
                     raw_words_text[i],
                     '>{}'.format(
                         new_words_text[i]) if raw_words_text[i] != new_words_text[i] else "*",

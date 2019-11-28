@@ -9,8 +9,8 @@ from torch.utils.data import DataLoader
 
 from dpattack.libs.luna import (Aggregator, CherryPicker, TrainingStopObserver,
                                 as_table, cast_list, create_folder_for_file,
-                                fetch_best_ckpt_name, idx_to_msk, log,
-                                log_config, ram_read, ram_write, show_mean_std,
+                                fetch_best_ckpt_name, idx_to_msk, 
+                                log_config, ram_pop, ram_write, show_mean_std,
                                 time, time_stamp)
 from dpattack.libs.luna.public import auto_create
 from dpattack.models import PosTagger, WordParser, WordTagParser
@@ -88,6 +88,30 @@ class IHack:
     def parser(self) -> Union[WordTagParser, WordParser]:
         return self.task.model
 
+    def init_logger(self, config):
+        if config.logf == 'on':
+            if config.hk_use_worker == 'on':
+                worker_info = "-{}@{}".format(config.hk_num_worker,
+                                              config.hk_worker_id)
+            else:
+                worker_info = ""
+            log_config('{}-{}-{}{}'.format(config.mode,
+                                           config.input, config.hk_tag_type, worker_info),
+                       log_path=config.workspace,
+                       default_target='cf')
+            from dpattack.libs.luna import log
+        else:
+            log = print
+
+        log('[General Settings]')
+        log(config)
+        log('[Hack Settings]')
+        for arg in config.kwargs:
+            if arg.startswith('hk'):
+                log(arg, '\t', config.kwargs[arg])
+        log('------------------')
+
+
     def setup(self, config):
         self.config = config
 
@@ -131,6 +155,7 @@ class IHack:
             ram_write('embed_grad', grad_out[0])
 
         self.parser.embed.register_backward_hook(embed_backward_hook)
+        self.parser.eval()
 
         self.embed_searcher = EmbeddingSearcher(
             embed=self.parser.embed.weight,
@@ -180,15 +205,16 @@ class IHack:
             self.nn_tagger.eval()
             s_tags = self.nn_tagger(words)
             pred_tags = s_tags.argmax(-1)[:, word_sid]
+            pred_tags = pred_tags.cpu().numpy().tolist()
             new_word_vid = None
             for i, ele in enumerate(pred_tags):
-                if self.vocab.tags[ele.item()] in must_tags:
+                if self.vocab.tags[ele] in must_tags:
                     if idxs[i] not in forbidden_idxs__:
                         new_word_vid = idxs[i]
                         break
             return new_word_vid, {"avgd": dists.mean().item(),
                                   "mind": dists.min().item()}
-        elif repl_method == '3gram' or 'crf':
+        elif repl_method in ['3gram', 'crf']:
             # Pipeline:
             #    256 minimum dists
             # -> Filtered by a Statistical tagger
@@ -206,7 +232,7 @@ class IHack:
                 cand[word_sid] = self.vocab.words[ele]
                 cands.append(cand)
 
-            pred_tags = self.trigram_tagger.tag_sents(cands)
+            pred_tags = tagger.tag_sents(cands)
             s_tags = [ele[word_sid][1] for ele in pred_tags]
 
             new_word_vid = None
@@ -215,7 +241,8 @@ class IHack:
                     if idxs[i] not in forbidden_idxs__:
                         new_word_vid = idxs[i]
                         break
-            return new_word_vid, {}
+            return new_word_vid, {"avgd": dists.mean().item(),
+                                  "mind": dists.min().item()}
         elif repl_method == 'tagdict':
             # Pipeline:
             #    All dists
@@ -252,3 +279,4 @@ class IHack:
             # -> Filtered by a tagger
             # -> Smallest one
             raise NotImplementedError
+        

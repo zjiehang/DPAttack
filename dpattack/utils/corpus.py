@@ -44,7 +44,7 @@ def sent_print(sent: Sentence, format='table'):
         raise NotImplementedError
 
 
-def init_sentence(seqs, tags, arcs, rels):
+def init_sentence(seqs, tags, arcs, rels, pred_arcs=None):
     length = len(seqs)
     ID = tuple(i for i in range(1, length+1))
     FORM = tuple(seqs)
@@ -52,9 +52,12 @@ def init_sentence(seqs, tags, arcs, rels):
     POS = tuple(tags)
     HEAD = tuple(arcs)
     DEPREL = tuple(rels)
-    LEMMA, FEATS, PHEAD, PDEPREL = map(
-        lambda x: tuple('_' for _ in range(x)), [length]*4)
-    return Sentence(ID, FORM, LEMMA, CPOS, POS, FEATS, HEAD, DEPREL, PHEAD, PHEAD)
+    if pred_arcs is None:
+        LEMMA, FEATS, PHEAD, PDEPREL = map(lambda x: tuple('_' for _ in range(x)), [length]*4)
+    else:
+        LEMMA, FEATS, PDEPREL = map(lambda x: tuple('_' for _ in range(x)), [length] * 3)
+        PHEAD = pred_arcs
+    return Sentence(ID, FORM, LEMMA, CPOS, POS, FEATS, HEAD, DEPREL, PHEAD, PDEPREL)
 
 
 class Corpus(object):
@@ -118,7 +121,7 @@ class Corpus(object):
     def load(cls, fname):
         start, sentences = 0, []
         with open(fname, 'r') as f:
-            lines = [line for line in f]
+            lines = [line for line in f if not line.startswith('#')]
         for i, line in enumerate(lines):
             if len(line) <= 1:
                 sentence = Sentence(*zip(*[l.split() for l in lines[start:i]]))

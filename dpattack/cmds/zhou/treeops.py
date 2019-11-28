@@ -70,3 +70,31 @@ def subtree_distribution(corpus: Corpus):
         if sid == 10:
             print()
             exit()
+
+
+if __name__ == "__main__":
+    # Corpus.load('/home/zhouyi/en_ewt-ud-test.txt')
+    # exit()
+
+    corpus = Corpus.load("/disks/sdb/zjiehang/zhou_data/ptb/ptb_test_3.3.0.sd")
+    min_span_len = 5
+    max_span_len = 10
+    tt = 0
+    for sid, sent in enumerate(corpus):
+        if len(sent.ID) < 15:
+            continue
+        # min_span_len = len(sent.ID) * 0.2
+        # max_span_len = len(sent.ID) * 0.3
+        min_span_len = 5
+        max_span_len = 8
+        span = gen_spans(sent)
+        span = list(filter(lambda ele: min_span_len <= ele[1] - ele[0] <= max_span_len, span))
+        # num += len(span)
+
+        if len(span) >= 2:
+            tt += 1
+        print(len(sent.ID), len(span), min_span_len)
+        # if sid == 100:
+        #     print()
+        #     break
+    print(tt)
