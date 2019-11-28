@@ -20,6 +20,22 @@ def cast_list(array, squeeze=True):
             return array.tolist()
 
 
+def flt2str(flt, fmt=":8.4f", cat=None):
+    fmter = "{{{}}}".format(fmt)
+    if isinstance(flt, (float, int)):
+        return fmter.format(flt)
+    elif isinstance(flt, list):
+        str_lst = [fmter.format(ele) for ele in flt]
+        if cat is None:
+            return str_lst
+        else:
+            return cat.join(str_lst)
+    elif isinstance(flt, (torch.Tensor, np.ndarray)):
+        return flt2str(cast_list(flt), fmt, cat)
+    else:
+        raise Exception('WTF objects are you passing?')
+
+
 def allocate_cuda_device(cuda_idx) -> torch.device:
     if torch.cuda.is_available() and cuda_idx >= 0:
         device = torch.device("cuda:{}".format(cuda_idx))
