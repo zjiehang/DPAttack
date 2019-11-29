@@ -177,10 +177,30 @@ class HackSubtree(IHack):
 
         elif self.config.hks_span_selection == "far":
             spans = gen_spans(sentence)
-            valid_spans = [span for span in spans if minl < len(span) < maxl]
+            valid_spans = [span for span in spans if minl <= span[1] + 1 - span[0] <= maxl]
             if len(valid_spans) >= 2 and valid_spans[-1][0] > valid_spans[0][1]:
                 src_span = valid_spans[0]
                 tgt_span = valid_spans[-1]
+            else:
+                log('Not enough subtrees')
+                return None
+            return src_span, tgt_span
+
+        elif self.config.hks_span_selection == "close":
+            spans = gen_spans(sentence)
+            valid_spans = [span for span in spans if minl <= span[1] + 1 - span[0] <= maxl]
+            # log(valid_spans)
+            if len(valid_spans) >= 2 and valid_spans[-1][0] > valid_spans[0][1]:
+                src_span = valid_spans[0]
+                tgt_span = None
+                for span in valid_spans:
+                    if span[0] - src_span[1] >= gap:
+                        tgt_span = span
+                        break
+                if tgt_span is not None:
+                    return src_span, tgt_span
+                else:
+                    return None
             else:
                 log('Not enough subtrees')
                 return None
