@@ -44,19 +44,25 @@ def sent_print(sent: Sentence, format='table'):
         raise NotImplementedError
 
 
-def init_sentence(seqs, tags, arcs, rels, pred_arcs=None):
-    length = len(seqs)
+def init_sentence(origin_seq, attack_seq, tags, arcs, rels, pred_arcs=None, pred_rels=None):
+    length = len(origin_seq)
     ID = tuple(i for i in range(1, length+1))
-    FORM = tuple(seqs)
+    FORM = tuple(attack_seq)
+    LEMMA = tuple(['_' if origin == attack else origin for origin, attack in zip(origin_seq, attack_seq)])
     CPOS = tuple(tags)
     POS = tuple(tags)
+    FEATS = tuple('_' for _ in range(length))
     HEAD = tuple(arcs)
     DEPREL = tuple(rels)
     if pred_arcs is None:
-        LEMMA, FEATS, PHEAD, PDEPREL = map(lambda x: tuple('_' for _ in range(x)), [length]*4)
+        PHEAD = tuple('_' for _ in range(length))
     else:
-        LEMMA, FEATS, PDEPREL = map(lambda x: tuple('_' for _ in range(x)), [length] * 3)
-        PHEAD = pred_arcs
+        PHEAD = tuple(['_' if gold == pred else pred for gold, pred in zip(arcs, pred_arcs)])
+    if pred_rels is None:
+        PDEPREL = tuple('_' for _ in range(length))
+    else:
+        PDEPREL = tuple(['_' if gold == pred else pred for gold, pred in zip(rels, pred_rels)])
+
     return Sentence(ID, FORM, LEMMA, CPOS, POS, FEATS, HEAD, DEPREL, PHEAD, PDEPREL)
 
 

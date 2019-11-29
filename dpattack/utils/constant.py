@@ -2,6 +2,7 @@ class CONSTANT(object):
     FALSE_TOKEN = -1
 
     AUXILIARY_VERB = ["do", "did", "does", "have", "has", "had"]
+    BE_FROM_VERB = ['be', 'been', 'being', 'is', 'are', 'am', 'was', 'were']
 
     VERB_TAG = 'VB'
     NOUN_TAG = 'NN'
@@ -10,7 +11,6 @@ class CONSTANT(object):
 
     JJ_REL_MODIFIER = 'amod'
     RB_REL_MODIFIER = 'advmod'
-
 
     ADJ_NN_TAGS = [ADJ_TAG] + [NOUN_TAG]
     REAL_WORD_TAGS = ['JJ','JJR','JJS',
