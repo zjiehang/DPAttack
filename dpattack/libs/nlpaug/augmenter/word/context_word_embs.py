@@ -160,7 +160,7 @@ class ContextualWordEmbsAug(WordAugmenter):
 
         return results, aug_idxes
 
-    def substitute(self, data, aug_idxes = None, n = 10):
+    def substitute(self, data, aug_idxes = None, n=30):
         # Pick target word for augmentation
         tokens = data.split(' ')
         if aug_idxes is None:

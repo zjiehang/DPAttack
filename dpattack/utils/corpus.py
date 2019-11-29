@@ -44,17 +44,26 @@ def sent_print(sent: Sentence, format='table'):
         raise NotImplementedError
 
 
-def init_sentence(seqs, tags, arcs, rels):
-    length = len(seqs)
+def init_sentence(origin_seq, attack_seq, tags, arcs, rels, pred_arcs=None, pred_rels=None):
+    length = len(origin_seq)
     ID = tuple(i for i in range(1, length+1))
-    FORM = tuple(seqs)
+    FORM = tuple(attack_seq)
+    LEMMA = tuple(['_' if origin == attack else origin for origin, attack in zip(origin_seq, attack_seq)])
     CPOS = tuple(tags)
     POS = tuple(tags)
+    FEATS = tuple('_' for _ in range(length))
     HEAD = tuple(arcs)
     DEPREL = tuple(rels)
-    LEMMA, FEATS, PHEAD, PDEPREL = map(
-        lambda x: tuple('_' for _ in range(x)), [length]*4)
-    return Sentence(ID, FORM, LEMMA, CPOS, POS, FEATS, HEAD, DEPREL, PHEAD, PHEAD)
+    if pred_arcs is None:
+        PHEAD = tuple('_' for _ in range(length))
+    else:
+        PHEAD = tuple(['_' if gold == pred else pred for gold, pred in zip(arcs, pred_arcs)])
+    if pred_rels is None:
+        PDEPREL = tuple('_' for _ in range(length))
+    else:
+        PDEPREL = tuple(['_' if gold == pred else pred for gold, pred in zip(rels, pred_rels)])
+
+    return Sentence(ID, FORM, LEMMA, CPOS, POS, FEATS, HEAD, DEPREL, PHEAD, PDEPREL)
 
 
 class Corpus(object):
@@ -118,7 +127,7 @@ class Corpus(object):
     def load(cls, fname):
         start, sentences = 0, []
         with open(fname, 'r') as f:
-            lines = [line for line in f]
+            lines = [line for line in f if not line.startswith('#')]
         for i, line in enumerate(lines):
             if len(line) <= 1:
                 sentence = Sentence(*zip(*[l.split() for l in lines[start:i]]))

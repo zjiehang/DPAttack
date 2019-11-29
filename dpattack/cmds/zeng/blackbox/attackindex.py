@@ -6,12 +6,14 @@ For substitute, two method: unk(replace each word to <unk>) and pos_tag
 '''
 import math
 import torch
+import random
 import numpy as np
 from dpattack.utils.constant import CONSTANT
 from dpattack.utils.parser_helper import is_chars_judger
 from dpattack.libs.luna.pytorch import cast_list
 from dpattack.models.char import CharParser
 from transformers import GPT2Tokenizer,GPT2LMHeadModel
+from collections import defaultdict
 
 
 class AttackIndex(object):
@@ -48,69 +50,69 @@ class AttackIndexRandomGenerator(AttackIndex):
         if self.config.input == 'char':
             word_index = list(range(length))
         else:
-            word_index = [index for index, tag in enumerate(tags) if tag in CONSTANT.REAL_WORD_TAGS]
+            word_index = [index - 1 for index, tag in enumerate(tags) if tag in CONSTANT.REAL_WORD_TAGS]
         if len(word_index) <= number:
             return word_index
         else:
             return np.random.choice(word_index, number, replace=False)
 
+# class AttackIndexInserting(AttackIndex):
+#     def __init__(self, config):
+#         super(AttackIndexInserting, self).__init__(config)
+#
+#     def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
+#         index = []
+#         length = len(tags)
+#         for i in range(length):
+#             if tags[i] in CONSTANT.NOUN_TAG:
+#                 # current index is a NN, check the word before it
+#                 if self.check_noun(tags, i):
+#                     index.append(i - 1)
+#             elif tags[i].startswith(CONSTANT.VERB_TAG):
+#                 # current index is a VB, check whether this VB is modified by a RB
+#                 if self.check_verb(seqs[i-1], tags, arcs, i):
+#                     index.append(i)
+#         index = list(set(index))
+#         return index
+#         #return self.get_random_index_by_length_rate(index, self.revised_rate, length)
+#
+#     def check_noun(self, tags, i):
+#         if i == 0:
+#             return True
+#         else:
+#             tag_before_word_i = tags[i-1]
+#             if not tag_before_word_i.startswith(CONSTANT.NOUN_TAG[0]) and not tag_before_word_i.startswith(CONSTANT.ADJ_TAG):
+#                 return True
+#             return False
+#
+#     def check_verb(self, verb, tags, arcs,i):
+#         if verb in CONSTANT.AUXILIARY_VERB:
+#             return False
+#         for tag, arc in zip(tags, arcs):
+#             if tag.startswith(CONSTANT.ADV_TAG) and arc == i:
+#                 return False
+#         return True
+#
+#
+# class AttackIndexDeleting(AttackIndex):
+#     def __init__(self, config):
+#         super(AttackIndexDeleting, self).__init__(config)
+#
+#     def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
+#         index = []
+#         length = len(tags)
+#         for i in range(length):
+#             if tags[i].startswith(CONSTANT.ADJ_TAG) or tags[i].startswith(CONSTANT.ADV_TAG):
+#                 if self.check_modifier(arcs,i):
+#                     index.append(i)
+#         return index
+#
+#     def check_modifier(self, arcs, index):
+#         for arc in arcs:
+#             if arc == index:
+#                 return False
+#         return True
 
-class AttackIndexInserting(AttackIndex):
-    def __init__(self, config):
-        super(AttackIndexInserting, self).__init__(config)
-
-    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
-        index = []
-        length = len(tags)
-        for i in range(length):
-            if tags[i] in CONSTANT.NOUN_TAG:
-                # current index is a NN, check the word before it
-                if self.check_noun(tags, i):
-                    index.append(i - 1)
-            elif tags[i].startswith(CONSTANT.VERB_TAG):
-                # current index is a VB, check whether this VB is modified by a RB
-                if self.check_verb(seqs[i-1], tags, arcs, i):
-                    index.append(i)
-        index = list(set(index))
-        return index
-        #return self.get_random_index_by_length_rate(index, self.revised_rate, length)
-
-    def check_noun(self, tags, i):
-        if i == 0:
-            return True
-        else:
-            tag_before_word_i = tags[i-1]
-            if not tag_before_word_i.startswith(CONSTANT.NOUN_TAG[0]) and not tag_before_word_i.startswith(CONSTANT.ADJ_TAG):
-                return True
-            return False
-
-    def check_verb(self, verb, tags, arcs,i):
-        if verb in CONSTANT.AUXILIARY_VERB:
-            return False
-        for tag, arc in zip(tags, arcs):
-            if tag.startswith(CONSTANT.ADV_TAG) and arc == i:
-                return False
-        return True
-
-
-class AttackIndexDeleting(AttackIndex):
-    def __init__(self, config):
-        super(AttackIndexDeleting, self).__init__(config)
-
-    def get_attack_index(self, seqs, seq_idx, tags, tag_idx, chars, arcs, mask):
-        index = []
-        length = len(tags)
-        for i in range(length):
-            if tags[i].startswith(CONSTANT.ADJ_TAG) or tags[i].startswith(CONSTANT.ADV_TAG):
-                if self.check_modifier(arcs,i):
-                    index.append(i)
-        return index
-
-    def check_modifier(self, arcs, index):
-        for arc in arcs:
-            if arc == index:
-                return False
-        return True
 
 class AttackIndexUnkReplacement(AttackIndex):
     def __init__(self, config, vocab = None, parser = None):
@@ -140,12 +142,16 @@ class AttackIndexUnkReplacement(AttackIndex):
             score_arc, score_rel = self.parser.forward(seq_idx_unk, tag_idx_unk)
         pred_arc = score_arc.argmax(dim=-1)
         non_equal_numbers = self.calculate_non_equal_numbers(pred_arc[:,mask.squeeze(0)], arcs[mask])
-        sorted_index = sorted(range(length), key=lambda k: non_equal_numbers[k], reverse=True)
-        number = self.get_number(self.revised_rate, length)
-        if isinstance(self.parser, CharParser):
-            return [index_to_be_replace[index] - 1 for index in sorted_index[:number]]
-        else:
-            return self.get_index_to_be_attacked(sorted_index,tags,index_to_be_replace,number)
+        non_equal_dict = self.get_non_equal_dict(non_equal_numbers,index_to_be_replace,tags,is_char=isinstance(self.parser, CharParser))
+        index_to_be_attacked = self.get_index_to_be_attacked(non_equal_dict,self.get_number(self.revised_rate, length))
+        return index_to_be_attacked
+        # sorted_index = sorted(range(length), key=lambda k: non_equal_numbers[k], reverse=True)
+        # if number is None:
+        #     number = self.get_number(self.revised_rate, length)
+        # if isinstance(self.parser, CharParser):
+        #     return [index_to_be_replace[index] - 1 for index in sorted_index[:number]]
+        # else:
+        #     return self.get_index_to_be_attacked(sorted_index,tags,index_to_be_replace,number)
 
     def generate_unk_seqs(self, seq, length, index_to_be_replace):
         '''
@@ -190,15 +196,31 @@ class AttackIndexUnkReplacement(AttackIndex):
         if torch.cuda.is_available():
             unk_chars = unk_chars.cuda()
         return unk_chars
+
+    def get_non_equal_dict(self, non_equal_numbers, index_to_be_replace, tags, is_char=False):
+        non_equal_dict = defaultdict(lambda: list())
+        for index, non_equal_number in enumerate(non_equal_numbers):
+            index_in_sentence = index_to_be_replace[index]
+            if not is_char:
+                if tags[index_in_sentence] in CONSTANT.REAL_WORD_TAGS:
+                    non_equal_dict[non_equal_number].append(index_in_sentence - 1)
+            else:
+                non_equal_dict[non_equal_number].append(index_in_sentence - 1)
+        return non_equal_dict
     
-    def get_index_to_be_attacked(self, sorted_index,tags,index_to_be_replace,number):
-        attacked_list = []
-        for index in sorted_index:
-            if tags[index_to_be_replace[index]] in CONSTANT.REAL_WORD_TAGS:
-                attacked_list.append(index_to_be_replace[index] - 1)
-                if len(attacked_list) >= number:
-                    break
-        return attacked_list
+    def get_index_to_be_attacked(self, non_equal_dict, number):
+        index_to_be_attacked = []
+        current_number = number
+        for key in sorted(non_equal_dict.keys(), reverse=True):
+            if len(non_equal_dict[key]) <= current_number:
+                index_to_be_attacked.extend(non_equal_dict[key])
+                current_number -= len(non_equal_dict[key])
+            else:
+                index_to_be_attacked.extend(np.random.choice(non_equal_dict[key], current_number, replace=False))
+                current_number = 0
+            if current_number == 0:
+                break
+        return index_to_be_attacked
 
 class AttackIndexPosTag(AttackIndex):
     def __init__(self, config):

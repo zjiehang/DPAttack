@@ -20,15 +20,12 @@ class Augmentation(Attack):
             if method == 'insert':
                 return InsertingPunct(config, self.vocab)
             elif method == 'substitute':
-                return Substituting(config, self.vocab, self.tagger, self.ROOT_TAG)
+                return Substituting(config, self.vocab)
             elif method == 'delete':
                 return DeletingPunct(config, self.vocab)
 
     def __call__(self, config):
         self.vocab = torch.load(config.vocab)
-        self.ROOT_TAG = self.vocab.tag_dict[Corpus.ROOT]
-        self.tagger = PosTagger.load(fetch_best_ckpt_name(config.tagger_model))
-        self.tagger.eval()
 
         # load training data
         corpus = Corpus.load(config.ftrain)
@@ -52,12 +49,12 @@ class Augmentation(Attack):
                 tags = self.get_tags_name(tag_idx)
                 mask = self.get_mask(seq_idx, self.vocab.pad_index, punct_list=self.vocab.puncts)
                 augmentation_seq, _,  _, _, _ = self.attack_seq_generator.generate_attack_seq(' '.join(seqs[1:]), seq_idx, tags, tag_idx, chars, arcs, rels, mask)
-                augmentation_corpus.sentences.append(init_sentence(tuple(augmentation_seq[1:]), sentence.POS, sentence.HEAD, sentence.DEPREL))
+                augmentation_corpus.sentences.append(init_sentence(sentence.FORM, tuple(augmentation_seq[1:]), sentence.POS, sentence.HEAD, sentence.DEPREL))
 
         if config.input == 'char':
-            saved_file = '{}/ptb_train_typo_{}.sd'.format(config.augmentation_dir, config.augmentation_rate)
+            saved_file = '{}/ptb_train_typo_{:.0f}%_{}.sd'.format(config.augmentation_dir, config.augmentation_rate*100, config.revised_rate)
         else:
-            saved_file = '{}/ptb_train_{}.sd'.format(config.augmentation_dir,config.augmentation_rate)
+            saved_file = '{}/ptb_train_{:.0f}%_{}.sd'.format(config.augmentation_dir, config.augmentation_rate*100, config.revised_rate)
 
         print("Complete! {} sentences have processed!".format(training_data_number))
         print("Current training data number is {}.".format(len(augmentation_corpus.sentences)))

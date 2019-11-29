@@ -1,15 +1,10 @@
 import torch
 import torch.nn as nn
-from datetime import datetime, timedelta
-from dpattack.utils.parser_helper import init_parser, load_parser
-from dpattack.utils.metric import ParserMetric
+from dpattack.utils.parser_helper import load_parser
 from dpattack.utils.corpus import Corpus
-from dpattack.utils.pretrained import Pretrained
-from dpattack.utils.vocab import Vocab
 from dpattack.libs.luna.ckpt_utils import fetch_best_ckpt_name
-from dpattack.models import PosTagger
-from dpattack.utils.data import TextDataset, batchify,collate_fn
-from dpattack.task import ParserTask, TaggerTask
+from dpattack.utils.data import TextDataset,collate_fn
+from dpattack.task import ParserTask
 
 from torch.utils.data import DataLoader
 
@@ -29,14 +24,13 @@ class Attack(object):
         print("Load the models")
         self.vocab = torch.load(config.vocab)
         self.parser = load_parser(fetch_best_ckpt_name(config.parser_model))
-        self.tagger = PosTagger.load(fetch_best_ckpt_name(config.tagger_model))
         self.model = ParserTask(self.vocab, self.parser)
 
         print("Load the dataset")
         corpus = Corpus.load(config.fdata)
         dataset = TextDataset(self.vocab.numericalize(corpus, training=True))
         loader = DataLoader(dataset=dataset, collate_fn=collate_fn)
-        return loader
+        return corpus, loader
 
     def get_seqs_name(self, seqs):
         # assert seqs.shape
