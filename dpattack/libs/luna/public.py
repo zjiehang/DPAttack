@@ -1,3 +1,5 @@
+import functools
+import warnings
 import logging
 import os
 import time
@@ -15,15 +17,14 @@ from sklearn.metrics import precision_recall_fscore_support as sklearn_prf
 import inspect
 import arrow
 import traceback
+from sklearn.linear_model import LinearRegression
+import torch
 
 __saved_path__ = "saved/vars"
 
 arg_required = object()
 arg_optional = object()
 arg_place_holder = object()
-
-import warnings
-import functools
 
 
 def deprecated(message: str = ''):
@@ -36,7 +37,8 @@ def deprecated(message: str = ''):
     def decorator_wrapper(func):
         @functools.wraps(func)
         def function_wrapper(*args, **kwargs):
-            current_call_source = '|'.join(traceback.format_stack(inspect.currentframe()))
+            current_call_source = '|'.join(
+                traceback.format_stack(inspect.currentframe()))
             if current_call_source not in function_wrapper.last_call_source:
                 warnings.warn("Function {} is now deprecated! {}".format(func.__name__, message),
                               category=DeprecationWarning, stacklevel=2)
@@ -99,7 +101,8 @@ def show_mem():
 
 def retrieve_name(var):
     for fi in reversed(inspect.stack()):
-        names = [var_name for var_name, var_val in fi.frame.f_locals.items() if var_val is var]
+        names = [var_name for var_name,
+                 var_val in fi.frame.f_locals.items() if var_val is var]
         if len(names) > 0:
             return names[0]
 
@@ -160,17 +163,6 @@ def as_table(x):
         return tabulate([[retrieve_name(ele), ele] for ele in x])
     elif isinstance(x, dict):
         return tabulate([[k, v] for k, v in x.items()])
-
-
-once_rw_ram = {}
-
-
-def ram_write(k, v):
-    once_rw_ram[k] = v
-
-
-def ram_read(k):
-    return once_rw_ram.pop(k)
 
 
 class ProgressManager:
@@ -292,6 +284,7 @@ def locate_chunk(num_total,  num_chunk, chunk_id):
         end = num_total
     return start, end
 
+
 class CherryPicker:
     def __init__(self, lower_is_better):
         self.lower_is_better = lower_is_better
@@ -302,7 +295,13 @@ class CherryPicker:
         self.history_infos.append(info)
         self.history_values.append(value)
 
+    @property
+    def size(self):
+        return len(self.history_values)
+
     def select_best_point(self):
+        if self.size == 0:
+            raise Exception("Nothing to pick.")
         # np.argmin selects the first occurrence of the min
         if self.lower_is_better:
             chosen_id = int(np.argmin(self.history_values))
@@ -373,11 +372,11 @@ def cast_item(array):
     return array
 
 
-def cast_list(array):
-    if isinstance(array, list):
-        return cast_list(np.array(array))
-    if isinstance(array, np.ndarray):
-        return array.squeeze().tolist()
+# def cast_list(array):
+#     if isinstance(array, list):
+#         return cast_list(np.array(array))
+#     if isinstance(array, np.ndarray):
+#         return array.squeeze().tolist()
 
 
 class Aggregator:
@@ -411,10 +410,15 @@ class Aggregator:
             agg.aggregated(key1, np.sum)  --> 9
             agg.mean(key1)  --> 3
     """
+
     def __init__(self):
         self.__has_key = False
         self.__keys = None
         self.__saved = None
+
+    @property
+    def size(self):
+        return len(self.__saved[0])
 
     def aggregate(self, *args):
         # First called, init the collector and decide the key mode
@@ -465,9 +469,9 @@ class Aggregator:
     def list(self, key):
         return self.aggregated(key)
 
-    def aggregated(self, key=None, reduce: Union[str, callable]= 'no'):
+    def aggregated(self, key=None, reduce: Union[str, callable] = 'no'):
         if reduce == 'no':
-            reduce_fn = lambda x: x
+            def reduce_fn(x): return x
         elif reduce == 'mean':
             reduce_fn = np.mean
         elif reduce == 'sum':
@@ -475,9 +479,10 @@ class Aggregator:
         elif reduce == 'std':
             reduce_fn = np.std
         elif isinstance(reduce, callable):
-            reduce_fn =reduce
+            reduce_fn = reduce
         else:
-            raise Exception('reduce must be None, mean, sum, std or a function.')
+            raise Exception(
+                'reduce must be None, mean, sum, std or a function.')
 
         if key is None:
             if not self.__has_key:
@@ -510,7 +515,8 @@ def analyze_length_count(length_count: dict):
     print("\tRatio: ")
     for pivot in pivots:
         idx = sum(list(map(lambda x: x < pivot, agg_ratio))) - 1
-        print("\t\t{} : {}".format(pivot, "-" if idx == -1 else sorted_count[idx][0]))
+        print("\t\t{} : {}".format(
+            pivot, "-" if idx == -1 else sorted_count[idx][0]))
 
 
 def analyze_vocab_count(vocab_count: dict):
@@ -559,9 +565,11 @@ def group_fields(lst: List[object],
         return rets
 
 
-def show_float_list(lst):
-    for ele in lst:
-        print("{:.4f}".format(ele), end=' ')
+def show_num_list(lst):
+    if isinstance(lst[0], float):
+        for ele in lst:
+            print("{:5.2f}".format(ele), end=' ')
+    else:
+        for ele in lst:
+            print("{:5}".format(ele), end=' ')
     print()
-
-

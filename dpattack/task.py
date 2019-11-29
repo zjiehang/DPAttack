@@ -58,7 +58,7 @@ class ParserTask(Task):
             self.scheduler.step()
 
     @torch.no_grad()
-    def evaluate(self, loader, punct=False, tagger=None):
+    def evaluate(self, loader, punct=False, tagger=None, mst=False):
         self.model.eval()
 
         loss, metric = 0, ParserMetric()
@@ -69,17 +69,20 @@ class ParserTask(Task):
             mask[:, 0] = 0
 
             tags = self.get_tags(words, tags, mask, tagger)
+            
+            s_arc, s_rel = self.model(
+                words, is_chars_judger(self.model, tags, chars))
+
+            loss += self.get_loss(s_arc[mask], s_rel[mask], arcs[mask], rels[mask])
+            pred_arcs, pred_rels = self.decode(s_arc, s_rel, mask, mst)
+
             # ignore all punctuation if not specified
             if not punct:
                 puncts = words.new_tensor(self.vocab.puncts)
                 mask &= words.unsqueeze(-1).ne(puncts).all(-1)
-            s_arc, s_rel = self.model(
-                words, is_chars_judger(self.model, tags, chars))
-            s_arc, s_rel = s_arc[mask], s_rel[mask]
+            pred_arcs, pred_rels = pred_arcs[mask], pred_rels[mask]
             gold_arcs, gold_rels = arcs[mask], rels[mask]
-            pred_arcs, pred_rels = self.decode(s_arc, s_rel)
 
-            loss += self.get_loss(s_arc, s_rel, gold_arcs, gold_rels)
             metric(pred_arcs, pred_rels, gold_arcs, gold_rels)
         loss /= len(loader)
 
@@ -89,7 +92,7 @@ class ParserTask(Task):
     @torch.no_grad()
     def partial_evaluate(self, instance: tuple,
                          mask_idxs: List[int],
-                         punct=False, tagger=None):
+                         punct=False, tagger=None, mst=False):
         self.model.eval()
 
         loss, metric = 0, ParserMetric()
@@ -99,6 +102,7 @@ class ParserTask(Task):
         mask = words.ne(self.vocab.pad_index)
         # ignore the first token of each sentence
         mask[:, 0] = 0
+        decode_mask = mask.clone()
 
         tags = self.get_tags(words, tags, mask, tagger)
         # ignore all punctuation if not specified
@@ -112,22 +116,23 @@ class ParserTask(Task):
         for idx in mask_idxs:
             mask[0][idx] = 0
 
-        s_arc, s_rel = s_arc[mask], s_rel[mask]
+        pred_arcs, pred_rels = self.decode(s_arc, s_rel, decode_mask, mst)
+
+        pred_arcs, pred_rels = pred_arcs[mask], pred_rels[mask]
         gold_arcs, gold_rels = arcs[mask], rels[mask]
-        pred_arcs, pred_rels = self.decode(s_arc, s_rel)
 
-        exmask = torch.ones_like(gold_arcs, dtype=torch.uint8)
+        # exmask = torch.ones_like(gold_arcs, dtype=torch.uint8)
 
-        for i, ele in enumerate(cast_list(gold_arcs)):
-            if ele in mask_idxs:
-                exmask[i] = 0
-        for i, ele in enumerate(cast_list(pred_arcs)):
-            if ele in mask_idxs:
-                exmask[i] = 0
-        gold_arcs = gold_arcs[exmask]
-        pred_arcs = pred_arcs[exmask]
-        gold_rels = gold_rels[exmask]
-        pred_rels = pred_rels[exmask]
+        # for i, ele in enumerate(cast_list(gold_arcs)):
+        #     if ele in mask_idxs:
+        #         exmask[i] = 0
+        # for i, ele in enumerate(cast_list(pred_arcs)):
+        #     if ele in mask_idxs:
+        #         exmask[i] = 0
+        # gold_arcs = gold_arcs[exmask]
+        # pred_arcs = pred_arcs[exmask]
+        # gold_rels = gold_rels[exmask]
+        # pred_rels = pred_rels[exmask]
 
         # loss += self.get_loss(s_arc, s_rel, gold_arcs, gold_rels)
         metric(pred_arcs, pred_rels, gold_arcs, gold_rels)
@@ -136,7 +141,7 @@ class ParserTask(Task):
     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     @torch.no_grad()
-    def predict(self, loader, tagger=None):
+    def predict(self, loader, tagger=None, mst=False):
         self.model.eval()
 
         all_tags, all_arcs, all_rels = [], [], []
@@ -149,8 +154,10 @@ class ParserTask(Task):
             tags = self.get_tags(words, tags, mask, tagger)
             s_arc, s_rel = self.model(
                 words, is_chars_judger(self.model, tags, chars))
-            tags, s_arc, s_rel = tags[mask], s_arc[mask], s_rel[mask]
-            pred_arcs, pred_rels = self.decode(s_arc, s_rel)
+
+            pred_arcs, pred_rels = self.decode(s_arc, s_rel, mask, mst)
+            tags, pred_arcs, pred_rels = tags[mask], pred_arcs[mask], pred_rels[mask]
+            
 
             all_tags.extend(torch.split(tags, lens))
             all_arcs.extend(torch.split(pred_arcs, lens))
@@ -163,6 +170,7 @@ class ParserTask(Task):
 
     def get_loss(self, s_arc, s_rel, gold_arcs, gold_rels):
         s_rel = s_rel[torch.arange(len(s_rel)), gold_arcs]
+        # s_rel = s_rel[torch.arange(len(gold_arcs)), gold_arcs]
 
         arc_loss = self.criterion(s_arc, gold_arcs)
         rel_loss = self.criterion(s_rel, gold_rels)
@@ -170,9 +178,16 @@ class ParserTask(Task):
 
         return loss
 
-    def decode(self, s_arc, s_rel):
-        pred_arcs = s_arc.argmax(dim=-1)
-        pred_rels = s_rel[torch.arange(len(s_rel)), pred_arcs].argmax(dim=-1)
+    def decode(self, s_arc, s_rel, mask, mst):
+        from dpattack.utils.alg import eisner
+        if mst:
+            pred_arcs = eisner(s_arc, mask)
+        else:
+            pred_arcs = s_arc.argmax(dim = -1)
+        # pred_arcs = s_arc.argmax(dim=-1)
+        # pred_rels = s_rel[torch.arange(len(s_rel)), pred_arcs].argmax(dim=-1)
+        pred_rels = s_rel.argmax(-1)
+        pred_rels = pred_rels.gather(-1, pred_arcs.unsqueeze(-1)).squeeze(-1)
 
         return pred_arcs, pred_rels
 
