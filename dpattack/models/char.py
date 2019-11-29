@@ -60,8 +60,7 @@ class CharParser(nn.Module):
         # nn.init.zeros_(self.embed.weight)
 
     def extract_embed_grad(self, grad):
-        self.word_embed_grad = []
-        self.word_embed_grad.append(grad)
+        self.word_embed_grad = grad
 
     def forward(self, words, chars):
         # get the mask and lengths of given batch

@@ -43,7 +43,7 @@ class BlackBoxAttack(Attack):
 
     def get_attack_corpus_saving_path(self, config):
         if config.input == 'char':
-            attack_corpus_save_path = '{}/black_typotest_{}_{}.conllx'.format(config.result_path,
+            attack_corpus_save_path = '{}/black_typo_{}_{}.conllx'.format(config.result_path,
                                                                           config.blackbox_index if config.blackbox_index == 'unk' else config.blackbox_pos_tag,
                                                                           config.revised_rate)
         else:

@@ -9,6 +9,7 @@ import torch
 import random
 import math
 import numpy as np
+from collections import defaultdict
 
 torch.backends.cudnn.enabled = False
 
@@ -88,6 +89,8 @@ class WhiteBoxAttack_Char(Attack):
         metric_after_attack = Metric()
 
         for index, (seq_idx, tag_idx, chars, arcs, rels) in enumerate(loader):
+            if index > 100:
+                break
             mask = self.get_mask(seq_idx, self.vocab.pad_index, punct_list=self.vocab.puncts)
             seqs = self.get_seqs_name(seq_idx)
             tags = self.get_tags_name(tag_idx)
@@ -144,8 +147,11 @@ class WhiteBoxAttack_Char(Attack):
         score_arc_before_attack, score_rel_before_attack = self.parser.forward(seq_idx, is_chars_judger(self.parser, tag_idx, chars))
         raw_metric = self.get_metric(score_arc_before_attack[mask], score_rel_before_attack[mask], arcs[mask], rels[mask])
 
-        char_mask = chars.gt(0)[0]
+        # pre-process word mask
+        word_index_grad_neednot_consider = cast_list(mask.eq(0).squeeze().nonzero())
 
+        # pre-process char mask
+        char_mask = chars.gt(0)[0]
         sorted_lens, indices = torch.sort(char_mask.sum(dim=1), descending=True)
         inverse_indices = indices.argsort()
 
@@ -161,7 +167,8 @@ class WhiteBoxAttack_Char(Attack):
 
         attack_chars = chars.clone()
 
-        forbidden_idx = dict()
+        forbidden_idx = defaultdict(lambda: set())
+        char_idx = dict()
         forbidden_idx.clear()
         revised_number = 0
         for i in range(self.attack_epochs):
@@ -171,13 +178,33 @@ class WhiteBoxAttack_Char(Attack):
             loss.backward()
 
             charembed_grad = self.embed_grad['char_embed_grad'][inverse_indices]
-            grads = charembed_grad[char_mask]
-            grad_norm = grads.norm(dim=1)
-            index = grad_norm.topk(1)[1].item()
+            wordembed_grad = self.parser.word_embed_grad[0]
+            word_grad_norm = wordembed_grad.norm(dim=1)
+            word_grad_norm[word_index_grad_neednot_consider] = -10000.0
+            index = word_grad_norm.topk(1)[1].item()
             if index not in forbidden_idx:
+                if len(forbidden_idx) < number:
+                    forbidden_idx[index].update(self.punct_idx.copy())
+                    revised_number += 1
+                    char_grad = charembed_grad[index][char_mask[index]]
+                    char_grad_norm = char_grad.norm(dim=1)
+                    char_index = char_grad_norm.topk(1)[1].item()
+                    char_idx[index] = char_index
+                else:
+                    idx_list = list(forbidden_idx.keys())
+                    word_grad_norm = word_grad_norm[idx_list]
+                    index = word_grad_norm.topk(1)[1].item()
+                    index = idx_list[index]
+
+
+
+            #grads = charembed_grad[char_mask]
+            #grad_norm = grads.norm(dim=1)
+            #index = grad_norm.topk(1)[1].item()
+            #if index not in forbidden_idx:
                 # if len(forbidden_idx) < number:
-                forbidden_idx[index] = self.punct_idx.copy()
-                revised_number += 1
+            #    forbidden_idx[index] = self.punct_idx.copy()
+            #    revised_number += 1
                 # else:
                 # idx_list = list(forbidden_idx.keys())
                 # grad_norm = grad_norm[idx_list]
@@ -185,11 +212,10 @@ class WhiteBoxAttack_Char(Attack):
                 # index = idx_list[index]
                 # revised_number += 1
 
-            index_in_seq = char_indexes[index]
-            raw_index = attack_chars[0,index_in_seq[0],index_in_seq[1]].item()
-            forbidden_idx[index].append(raw_index)
-            replace_index = self.find_neighbors(raw_index, grads[index],forbidden_idx[index])
-            attack_chars[0,index_in_seq[0],index_in_seq[1]] = replace_index
+            raw_index = attack_chars[0,index,char_idx[index]].item()
+            forbidden_idx[index].add(raw_index)
+            replace_index = self.find_neighbors(raw_index, charembed_grad[index,char_idx[index]],list(forbidden_idx[index]))
+            attack_chars[0,index,char_idx[index]] = replace_index
 
             self.parser.eval()
             score_arc_after_attack, score_rel_after_attack = self.parser.forward(seq_idx,is_chars_judger(self.parser, tag_idx,attack_chars))
@@ -206,7 +232,7 @@ class WhiteBoxAttack_Char(Attack):
     @torch.no_grad()
     def find_neighbors(self, raw_index, grads, forbidden):
         raw_embedding = self.embedding_weight[raw_index]
-        delta = raw_embedding - 1000 * F.normalize(grads,dim=0)
+        delta = raw_embedding -  F.normalize(grads,dim=0)
 
         diffs = -torch.sqrt(torch.sum(torch.pow(delta - self.embedding_weight, 2),dim=1))
         # diffs = self.distance(delta.unsqueeze(0), self.embedding_weight)

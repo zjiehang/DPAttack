@@ -4,7 +4,7 @@ import random
 class CharTypoAug(object):
     def __init__(self, char_dict):
         self.char_list = [key for key in char_dict.keys() if key.isdigit() or key.isalpha()]
-        self.function = [self.substitute,self.insert,self.delete]
+        self.function = [self.substitute]
 
     def get_typos(self, seq, indexes):
         origin_seq = seq.split()
