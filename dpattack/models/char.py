@@ -59,6 +59,10 @@ class CharParser(nn.Module):
         pass
         # nn.init.zeros_(self.embed.weight)
 
+    def extract_embed_grad(self, grad):
+        self.word_embed_grad = []
+        self.word_embed_grad.append(grad)
+
     def forward(self, words, chars):
         # get the mask and lengths of given batch
         mask = words.ne(self.pad_index)
@@ -73,6 +77,8 @@ class CharParser(nn.Module):
         char_embed = self.char_lstm(chars[mask])
         char_embed = pad_sequence(torch.split(char_embed, lens.tolist()), True)
         x = self.embed_dropout(char_embed)
+        if x.requires_grad == True:
+            x.register_hook(self.extract_embed_grad)
 
         sorted_lens, indices = torch.sort(lens, descending=True)
         inverse_indices = indices.argsort()
