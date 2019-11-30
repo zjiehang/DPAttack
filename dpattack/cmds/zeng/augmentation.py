@@ -8,6 +8,8 @@ from dpattack.libs.luna.ckpt_utils import fetch_best_ckpt_name
 from dpattack.cmds.zeng.blackbox.blackboxmethod import CharTypo,InsertingPunct,Substituting,DeletingPunct
 from dpattack.utils.data import TextDataset,DataLoader,collate_fn
 from dpattack.cmds.zeng.attack import Attack
+from dpattack.utils.parser_helper import load_parser
+from dpattack.task import ParserTask
 
 # for training data Augmentation
 class Augmentation(Attack):
@@ -26,7 +28,8 @@ class Augmentation(Attack):
 
     def __call__(self, config):
         self.vocab = torch.load(config.vocab)
-
+        self.parser = load_parser(fetch_best_ckpt_name(config.parser_model))
+        self.task = ParserTask(self.vocab, self.parser)
         # load training data
         corpus = Corpus.load(config.ftrain)
         dataset = TextDataset(self.vocab.numericalize(corpus, training=True))
@@ -48,11 +51,12 @@ class Augmentation(Attack):
                 seqs = self.get_seqs_name(seq_idx)
                 tags = self.get_tags_name(tag_idx)
                 mask = self.get_mask(seq_idx, self.vocab.pad_index, punct_list=self.vocab.puncts)
-                augmentation_seq, _,  _, _, _ = self.attack_seq_generator.generate_attack_seq(' '.join(seqs[1:]), seq_idx, tags, tag_idx, chars, arcs, rels, mask)
+                raw_metric = self.task.evaluate([(seq_idx, tag_idx, chars, arcs, rels)],mst=config.mst)
+                augmentation_seq, _,  _, _, _ = self.attack_seq_generator.generate_attack_seq(' '.join(seqs[1:]), seq_idx, tags, tag_idx, chars, arcs, rels, mask, raw_metric)
                 augmentation_corpus.sentences.append(init_sentence(sentence.FORM, tuple(augmentation_seq[1:]), sentence.POS, sentence.HEAD, sentence.DEPREL))
 
         if config.input == 'char':
-            saved_file = '{}/ptb_train_typo_{:.0f}%_{}.sd'.format(config.augmentation_dir, config.augmentation_rate*100, config.revised_rate)
+            saved_file = '{}/ptb_train_typo_only_substitute_{:.0f}%_{}.sd'.format(config.augmentation_dir, config.augmentation_rate*100, config.revised_rate)
         else:
             saved_file = '{}/ptb_train_{:.0f}%_{}.sd'.format(config.augmentation_dir, config.augmentation_rate*100, config.revised_rate)
 

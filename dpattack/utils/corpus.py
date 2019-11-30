@@ -48,7 +48,7 @@ def init_sentence(origin_seq, attack_seq, tags, arcs, rels, pred_arcs=None, pred
     length = len(origin_seq)
     ID = tuple(i for i in range(1, length+1))
     FORM = tuple(attack_seq)
-    LEMMA = tuple(['_' if origin == attack else origin for origin, attack in zip(origin_seq, attack_seq)])
+    LEMMA = tuple(['_' if origin.lower() == attack.lower() else origin for origin, attack in zip(origin_seq, attack_seq)])
     CPOS = tuple(tags)
     POS = tuple(tags)
     FEATS = tuple('_' for _ in range(length))

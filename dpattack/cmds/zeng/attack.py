@@ -24,7 +24,7 @@ class Attack(object):
         print("Load the models")
         self.vocab = torch.load(config.vocab)
         self.parser = load_parser(fetch_best_ckpt_name(config.parser_model))
-        self.model = ParserTask(self.vocab, self.parser)
+        self.task = ParserTask(self.vocab, self.parser)
 
         print("Load the dataset")
         corpus = Corpus.load(config.fdata)

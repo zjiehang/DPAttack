@@ -143,7 +143,7 @@ class AttackIndexUnkReplacement(AttackIndex):
         pred_arc = score_arc.argmax(dim=-1)
         non_equal_numbers = self.calculate_non_equal_numbers(pred_arc[:,mask.squeeze(0)], arcs[mask])
         non_equal_dict = self.get_non_equal_dict(non_equal_numbers,index_to_be_replace,tags,is_char=isinstance(self.parser, CharParser))
-        index_to_be_attacked = self.get_index_to_be_attacked(non_equal_dict,self.get_number(self.revised_rate, length))
+        index_to_be_attacked = self.get_index_to_be_attacked(non_equal_dict,self.get_number(self.revised_rate, len(seqs) if isinstance(self.parser, CharParser)else length))
         return index_to_be_attacked
         # sorted_index = sorted(range(length), key=lambda k: non_equal_numbers[k], reverse=True)
         # if number is None:

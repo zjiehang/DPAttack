@@ -89,31 +89,32 @@ class WhiteBoxAttack_Char(Attack):
         metric_after_attack = Metric()
 
         for index, (seq_idx, tag_idx, chars, arcs, rels) in enumerate(loader):
-            if index > 100:
-                break
             mask = self.get_mask(seq_idx, self.vocab.pad_index, punct_list=self.vocab.puncts)
             seqs = self.get_seqs_name(seq_idx)
             tags = self.get_tags_name(tag_idx)
 
             number = self.get_number(config.revised_rate, len(seqs) - 1)
             # attack for one sentence
-            metric_before , metric_after,\
-            score_arc_after_attack, score_rel_after_attack, \
-            attack_seq, revised_number = self.attack_for_each_sentence(seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask, number)
+            raw_metric, attack_metric,\
+            attack_seq, revised_number = self.attack_for_each_sentence(config, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask, number)
 
-            metric_before_attack += metric_before
-            metric_after_attack += metric_after
+            metric_before_attack += raw_metric
+            metric_after_attack += attack_metric
 
             if config.save_result_to_file:
                 # all result ignores the first token <ROOT>
-                pred_arc_after_attack, pred_rel_after_attack = self.decode(score_arc_after_attack.squeeze(0)[1:],score_rel_after_attack.squeeze(0)[1:])
+                attack_seq_idx = self.vocab.word2id(attack_seq).unsqueeze(0)
+                if torch.cuda.is_available():
+                    attack_seq_idx = attack_seq_idx.cuda()
+                attack_chars = self.get_chars_idx_by_seq(attack_seq)
+                _, attack_arc, attack_rel = self.task.predict([(attack_seq_idx, tag_idx, attack_chars)],mst=config.mst)
                 attack_corpus.append(init_sentence(seqs[1:],
                                                    attack_seq[1:],
                                                    tags[1:],
                                                    cast_list(arcs)[1:],
                                                    self.vocab.id2rel(rels)[1:],
-                                                   cast_list(pred_arc_after_attack),
-                                                   self.vocab.id2rel(pred_rel_after_attack)))
+                                                   attack_arc,
+                                                   attack_rel))
 
             revised_numbers += revised_number
             print("Sentence: {}, Revised: {} Before: {} After: {} ".format(index + 1, revised_number, metric_before_attack, metric_after_attack))
@@ -130,7 +131,7 @@ class WhiteBoxAttack_Char(Attack):
         loss = margin.sum()
         return loss
 
-    def attack_for_each_sentence(self, seq, seq_idx, tag, tag_idx, chars, arcs, rels, mask, number):
+    def attack_for_each_sentence(self, config, seq, seq_idx, tag, tag_idx, chars, arcs, rels, mask, number):
         '''
         :param seqs:
         :param seq_idx:
@@ -144,11 +145,13 @@ class WhiteBoxAttack_Char(Attack):
         # for metric before attacking
         # loss, raw_metric = self.task.evaluate([seq_idx,tag_idx, chars,arcs, rels])
         self.parser.eval()
-        score_arc_before_attack, score_rel_before_attack = self.parser.forward(seq_idx, is_chars_judger(self.parser, tag_idx, chars))
-        raw_metric = self.get_metric(score_arc_before_attack[mask], score_rel_before_attack[mask], arcs[mask], rels[mask])
+        _, raw_metric = self.task.evaluate([(seq_idx, tag_idx, chars, arcs, rels)],mst=config.mst)
+        # score_arc_before_attack, score_rel_before_attack = self.parser.forward(seq_idx, is_chars_judger(self.parser, tag_idx, chars))
+        # raw_metric = self.get_metric(score_arc_before_attack[mask], score_rel_before_attack[mask], arcs[mask], rels[mask])
 
         # pre-process word mask
-        word_index_grad_neednot_consider = cast_list(mask.eq(0).squeeze().nonzero())
+        word_index_grad_neednot_consider = cast_list(rels.eq(self.punct_rel_idx).squeeze().nonzero())
+        word_index_grad_neednot_consider.append(0)
 
         # pre-process char mask
         char_mask = chars.gt(0)[0]
@@ -163,13 +166,12 @@ class WhiteBoxAttack_Char(Attack):
         punct_idx_list = cast_list(rels.eq(self.punct_rel_idx).nonzero())
         char_mask[punct_idx_list, :] = False
         # the index in origin char
-        char_indexes = cast_list(char_mask.nonzero())
+        # char_indexes = cast_list(char_mask.nonzero())
 
         attack_chars = chars.clone()
 
         forbidden_idx = defaultdict(lambda: set())
         char_idx = dict()
-        forbidden_idx.clear()
         revised_number = 0
         for i in range(self.attack_epochs):
             self.parser.zero_grad()
@@ -181,45 +183,56 @@ class WhiteBoxAttack_Char(Attack):
             wordembed_grad = self.parser.word_embed_grad[0]
             word_grad_norm = wordembed_grad.norm(dim=1)
             word_grad_norm[word_index_grad_neednot_consider] = -10000.0
-            index = word_grad_norm.topk(1)[1].item()
-            if index not in forbidden_idx:
-                if len(forbidden_idx) < number:
+
+            if i == 0:
+                current_norm_indexes = cast_list(word_grad_norm.topk(number)[1])
+                for index in current_norm_indexes:
                     forbidden_idx[index].update(self.punct_idx.copy())
                     revised_number += 1
                     char_grad = charembed_grad[index][char_mask[index]]
                     char_grad_norm = char_grad.norm(dim=1)
                     char_index = char_grad_norm.topk(1)[1].item()
                     char_idx[index] = char_index
-                else:
-                    idx_list = list(forbidden_idx.keys())
-                    word_grad_norm = word_grad_norm[idx_list]
-                    index = word_grad_norm.topk(1)[1].item()
-                    index = idx_list[index]
-
-
-
-            #grads = charembed_grad[char_mask]
-            #grad_norm = grads.norm(dim=1)
-            #index = grad_norm.topk(1)[1].item()
-            #if index not in forbidden_idx:
-                # if len(forbidden_idx) < number:
-            #    forbidden_idx[index] = self.punct_idx.copy()
-            #    revised_number += 1
-                # else:
-                # idx_list = list(forbidden_idx.keys())
-                # grad_norm = grad_norm[idx_list]
-                # index = grad_norm.topk(1)[1].item()
-                # index = idx_list[index]
-                # revised_number += 1
-
-            raw_index = attack_chars[0,index,char_idx[index]].item()
-            forbidden_idx[index].add(raw_index)
-            replace_index = self.find_neighbors(raw_index, charembed_grad[index,char_idx[index]],list(forbidden_idx[index]))
-            attack_chars[0,index,char_idx[index]] = replace_index
+            # if number == 1:
+            #     if len(forbidden_idx.keys()) == 1:
+            #         current_norm_indexes = list(forbidden_idx.keys())
+            #     else:
+            #         current_norm_indexes = cast_list(word_grad_norm.topk(1)[1])
+            #         for index in current_norm_indexes:
+            #             revised_number += 1
+            #             forbidden_idx[index].update(self.punct_idx.copy())
+            #             char_grad = charembed_grad[index][char_mask[index]]
+            #             char_grad_norm = char_grad.norm(dim=1)
+            #             char_index = char_grad_norm.topk(1)[1].item()
+            #             char_idx[index] = char_index
+            # elif number > 1:
+            #     current_norm_indexes = cast_list(word_grad_norm.topk(2)[1])
+            #     for count, index in enumerate(current_norm_indexes):
+            #         if index in forbidden_idx:
+            #             continue
+            #         else:
+            #             if len(forbidden_idx) < number:
+            #                 revised_number += 1
+            #                 forbidden_idx[index].update(self.punct_idx.copy())
+            #                 char_grad = charembed_grad[index][char_mask[index]]
+            #                 char_grad_norm = char_grad.norm(dim=1)
+            #                 char_index = char_grad_norm.topk(1)[1].item()
+            #                 char_idx[index] = char_index
+            #             else:
+            #                 current_norm_indexes[count] = np.random.choice(list(forbidden_idx.keys()))
+            #     while current_norm_indexes[0] == current_norm_indexes[1]:
+            #         current_norm_indexes[1] = np.random.choice(list(forbidden_idx.keys()))
+            for index in forbidden_idx.keys():
+                raw_index = attack_chars[0, index, char_idx[index]].item()
+                # add raw index to be forbidden
+                # if raw_index_char is a alpha, including its lower and upper letter
+                self.add_raw_index_to_be_forbidden(forbidden_idx, index, raw_index)
+                replace_index = self.find_neighbors(raw_index, charembed_grad[index, char_idx[index]],list(forbidden_idx[index]))
+                attack_chars[0, index, char_idx[index]] = replace_index
 
             self.parser.eval()
-            score_arc_after_attack, score_rel_after_attack = self.parser.forward(seq_idx,is_chars_judger(self.parser, tag_idx,attack_chars))
-            attack_metric = self.get_metric(score_arc_after_attack[mask], score_rel_after_attack[mask], arcs[mask],rels[mask])
+
+            _, attack_metric = self.task.evaluate([(seq_idx, tag_idx, attack_chars, arcs, rels)], mst=config.mst)
 
             if attack_metric.uas < raw_metric.uas:
                 self.succeed_number += 1
@@ -227,23 +240,22 @@ class WhiteBoxAttack_Char(Attack):
                 break
         attack_seq = [Corpus.ROOT] + [self.vocab.id2char(chars) for chars in attack_chars[0,1:]]
 
-        return raw_metric, attack_metric, score_arc_after_attack, score_rel_after_attack, attack_seq, revised_number
+        return raw_metric, attack_metric, attack_seq, revised_number
+
+    def add_raw_index_to_be_forbidden(self, forbidden_idx, index, raw_index):
+        forbidden_idx[index].add(raw_index)
+        # raw_char = self.vocab.chars[raw_index]
+        # if raw_char.islower():
+        #     forbidden_idx[index].add(self.vocab.char_dict[raw_char.upper()])
+        # elif raw_char.isupper():
+        #     forbidden_idx[index].add(self.vocab.char_dict[raw_char.lower()])
+
 
     @torch.no_grad()
     def find_neighbors(self, raw_index, grads, forbidden):
         raw_embedding = self.embedding_weight[raw_index]
         delta = raw_embedding -  F.normalize(grads,dim=0)
-
         diffs = -torch.sqrt(torch.sum(torch.pow(delta - self.embedding_weight, 2),dim=1))
-        # diffs = self.distance(delta.unsqueeze(0), self.embedding_weight)
-        #print(diffs)
-        # diffs[raw_index] = -1.1
-        # diffs[0] = -1.1
-        # diffs[1] = -1.1
-
-        # print(cast_list(diffs))
-        # diffs = torch.sum(grads.unsqueeze(0) * self.embedding_weight,dim=1)
-        # print(cast_list(diffs))
         diffs[forbidden] = -10000.0
         return diffs.topk(1)[1].item()
 

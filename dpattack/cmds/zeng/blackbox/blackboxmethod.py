@@ -4,6 +4,7 @@ from dpattack.cmds.zeng.blackbox.attackindex import *
 from dpattack.libs.luna.pytorch import cast_list
 from dpattack.utils.aug import CharTypoAug
 from dpattack.utils.tag_tool import gen_tag_dict
+from nltk import CRFTagger
 
 
 class BlackBoxMethod(object):
@@ -46,11 +47,15 @@ class BlackBoxMethod(object):
 
 
 class Substituting(BlackBoxMethod):
-    def __init__(self, config, vocab, parser=None):
+    def __init__(self, config, task, vocab=None, parser=None):
         super(Substituting, self).__init__(vocab)
+        self.task = task
+        self.config = config
         self.index = self.get_index(config, vocab, parser)
         self.aug = get_blackbox_augmentor(config.blackbox_model, config.path, config.revised_rate, vocab=vocab, ftrain=config.ftrain)
         self.tag_dict = gen_tag_dict(Corpus.load(config.ftrain), vocab, 2, False)
+        self.crf_tagger = CRFTagger()
+        self.crf_tagger.set_model_file(config.crf_tagger_path)
 
     def get_index(self, config, vocab=None, parser=None):
         if config.mode == 'augmentation':
@@ -63,14 +68,16 @@ class Substituting(BlackBoxMethod):
                 exit()
             return AttackIndexUnkReplacement(config, vocab=vocab, parser=parser)
 
-    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
+    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask, raw_metric=None):
         # generate word index to be attacked
         attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
         # generate word candidates to be attacked
         candidates, indexes = self.substituting(seqs, attack_index)
         # check candidates by pos_tagger
-        attack_seq, revised_list = self.check_pos_tag(seqs, tags, candidates, indexes)
-        return [Corpus.ROOT] + attack_seq, mask, arcs, rels, len(revised_list)
+        candidates, indexes = self.check_pos_tag(seqs, tags, candidates, indexes)
+        attack_seq, revised_number = self.check_uas(seqs, tag_idx, arcs, rels, candidates, indexes, raw_metric)
+
+        return [Corpus.ROOT] + attack_seq, mask, arcs, rels, revised_number
 
     def substituting(self, seq, index):
         try:
@@ -88,25 +95,80 @@ class Substituting(BlackBoxMethod):
     def update_mask_arc_rel(self, mask, arc, rel, revised_list):
         return mask, arc, rel
 
-    def check_pos_tag(self, seqs, tags, candidates, indexes):
-        final_attack_seq = self.copy_str_to_list(seqs)
-        revised_index_list = []
-        for count, index in enumerate(indexes):
-            succeed = self.check_pos_tag_under_each_index(seqs, tags, candidates[count], index)
-            if succeed != self.FALSE_TOKEN:
-                final_attack_seq[index] = candidates[count][succeed]
-                revised_index_list.append(index)
-        return final_attack_seq, revised_index_list
+    def check_pos_tag(self, seqs, tags, origin_candidates, indexes):
+        tag_check_candidates = []
+        tag_check_indexes = []
+        for index, candidate in zip(indexes,origin_candidates):
+            candidate = self.check_pos_tag_under_each_index(seqs, tags, candidate, index)
+            if len(candidate) != 0:
+                tag_check_indexes.append(index)
+                tag_check_candidates.append(candidate)
+        return tag_check_candidates, tag_check_indexes
 
     def check_pos_tag_under_each_index(self, seqs, tags, candidate, index):
-        if tags[index+1] not in self.tag_dict:
-            return self.FALSE_TOKEN
+        if self.config.blackbox_tagger == 'dict':
+            if tags[index + 1] not in self.tag_dict:
+                return []
 
-        word_list_with_same_tag = self.tag_dict[tags[index+1]]
+            word_list_with_same_tag = self.tag_dict[tags[index+1]]
+            tag_check_candidate = []
+            for i, cand in enumerate(candidate):
+                cand_idx = self.vocab.word_dict.get(cand.lower(), self.vocab.unk_index)
+                if cand_idx != self.vocab.unk_index:
+                    if cand_idx in word_list_with_same_tag:
+                        tag_check_candidate.append(cand)
+                        if len(tag_check_candidate) > self.config.blackbox_candidates:
+                            break
+            return tag_check_candidate
+        elif self.config.blackbox_tagger == 'crf':
+            tag_check_candidate = []
+            sents = self.duplicate_sentence_with_candidate_replacement(seqs, candidate, index)
+            word_tag_list = self.crf_tagger.tag_sents(sents)
+            for count,word_tag in enumerate(word_tag_list):
+                if word_tag[index][1] == tags[index + 1]:
+                    tag_check_candidate.append(candidate[count])
+                    if len(tag_check_candidate) > self.config.blackbox_candidates:
+                        break
+            return tag_check_candidate
+
+    def check_uas(self, seqs, tag_idx, arcs, rels, candidates, indexes, raw_metric):
+        final_attack_seq = self.copy_str_to_list(seqs)
+        revised_number = 0
+        for index, candidate in zip(indexes, candidates):
+            succeed_flag = self.check_uas_under_each_index(seqs, tag_idx, arcs, rels, candidate, index, raw_metric)
+            if succeed_flag != CONSTANT.FALSE_TOKEN:
+                final_attack_seq[index] = candidate[succeed_flag]
+            else:
+                final_attack_seq[index] = candidate[0]
+            revised_number += 1
+        return final_attack_seq, revised_number
+
+    def check_uas_under_each_index(self, seqs, tag_idx, arcs, rels, candidate, index, raw_metric):
         for i, cand in enumerate(candidate):
-            if self.vocab.word_dict.get(cand.lower(), self.vocab.unk_index) in word_list_with_same_tag:
+            attack_seqs = self.copy_str_to_list(seqs)
+            attack_seqs[index] = cand
+            attack_metric = self.get_metric_by_seqs(attack_seqs, tag_idx, arcs, rels)
+            if attack_metric.uas < raw_metric.uas:
                 return i
-        return self.FALSE_TOKEN
+        return CONSTANT.FALSE_TOKEN
+
+    def get_metric_by_seqs(self, attack_seqs, tag_idx, arcs, rels):
+        attack_seq_idx = self.vocab.word2id([Corpus.ROOT] + attack_seqs).unsqueeze(0)
+        if torch.cuda.is_available():
+            attack_seq_idx = attack_seq_idx.cuda()
+        if is_chars_judger(self.task.model):
+            attack_chars = self.get_chars_idx_by_seq(attack_seqs)
+            _, attack_metric = self.task.evaluate([(attack_seq_idx, None, attack_chars, arcs, rels)], mst=self.config.mst)
+        else:
+            attack_tag_idx = tag_idx.clone()
+            _, attack_metric = self.task.evaluate([(attack_seq_idx, attack_tag_idx, None, arcs, rels)],mst=self.config.mst)
+        return attack_metric
+
+    def get_chars_idx_by_seq(self, sentence):
+        chars = self.vocab.char2id(sentence).unsqueeze(0)
+        if torch.cuda.is_available():
+            chars = chars.cuda()
+        return chars
 
     # def check_pos_tag_under_each_index(self, seqs, tag_idx, candidate, index):
     #     if len(candidate) == 0:
@@ -255,7 +317,7 @@ class InsertingPunct(BlackBoxMethod):
 
         self.index = AttackIndexInsertingPunct(config, vocab)
 
-    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
+    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask, raw_metric=None):
         attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
 
         attack_index.sort(reverse=True)
@@ -320,7 +382,7 @@ class DeletingPunct(BlackBoxMethod):
 
         self.index = AttackIndexDeletingPunct(config, vocab)
 
-    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
+    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask, raw_metric=None):
         gold_arcs = cast_list(arcs)
         attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
 
@@ -364,10 +426,11 @@ class CharTypo(BlackBoxMethod):
                 exit()
             return AttackIndexUnkReplacement(config, vocab=vocab, parser=parser)
 
-    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask):
+    def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask, raw_metric=None):
+        origin_seqs = ' '.join([self.vocab.id2char(charid) for charid in chars[0,1:]])
         # generate word index to be attacked
-        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(origin_seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
 
-        attack_seq = self.aug.get_typos(seqs, attack_index)
+        attack_seq = self.aug.get_typos(origin_seqs, attack_index)
 
         return [Corpus.ROOT] + attack_seq, mask, arcs, rels, len(attack_index)
