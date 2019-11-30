@@ -286,10 +286,11 @@ def locate_chunk(num_total,  num_chunk, chunk_id):
 
 
 class CherryPicker:
-    def __init__(self, lower_is_better):
+    def __init__(self, lower_is_better, compare_fn=None):
         self.lower_is_better = lower_is_better
         self.history_values = []
         self.history_infos = []
+        self.compare_fn = compare_fn
 
     def add(self, value, info):
         self.history_infos.append(info)
@@ -303,10 +304,23 @@ class CherryPicker:
         if self.size == 0:
             raise Exception("Nothing to pick.")
         # np.argmin selects the first occurrence of the min
-        if self.lower_is_better:
-            chosen_id = int(np.argmin(self.history_values))
+        if self.compare_fn is None:
+            if self.lower_is_better:
+                chosen_id = int(np.argmin(self.history_values))
+            else:
+                chosen_id = int(np.argmax(self.history_values))
         else:
-            chosen_id = int(np.argmax(self.history_values))
+            chosen_id = len(self.history_values) - 1
+            chosen_val = self.history_values[-1]
+            for i in reversed(range(len(self.history_values))):
+                if self.lower_is_better:
+                    if self.compare_fn(self.history_values[i], chosen_val) <= 0:
+                        chosen_id = i
+                        chosen_val = self.history_values[chosen_id]
+                else:
+                    if self.compare_fn(self.history_values[i], chosen_val) >= 0:
+                        chosen_id = i
+                        chosen_val = self.history_values[chosen_id]
         return chosen_id, self.history_values[chosen_id], self.history_infos[chosen_id]
 
 
