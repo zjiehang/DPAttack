@@ -54,7 +54,7 @@ class _Tags:
         if 'v' in k:
             ret += ['VB', 'VBD', 'VBG', 'VBN', 'VBZ', 'VBP']
         if 'i' in k:
-            ret += ['i']
+            ret += ['IN']
         if 'r' in k:
             ret += ['RB', 'RBR', 'RBS']
         return tuple(ret)

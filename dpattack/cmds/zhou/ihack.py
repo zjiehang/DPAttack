@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 
 from dpattack.libs.luna import (Aggregator, CherryPicker, TrainingStopObserver,
                                 as_table, cast_list, create_folder_for_file,
-                                fetch_best_ckpt_name, idx_to_msk, 
+                                fetch_best_ckpt_name, idx_to_msk,
                                 log_config, ram_pop, ram_write, show_mean_std,
                                 time, time_stamp)
 from dpattack.libs.luna.public import auto_create
@@ -28,57 +28,69 @@ import random
 from config import Config
 from functools import lru_cache
 from nltk import TrigramTagger, CRFTagger
-
-
-# Code for fucking VSCode debug console
-
-
-class V:
-    def __sub__(self, tsr):
-        for ele in tsr.__repr__().split('\n'):
-            print(ele)
-
-
-v = V()
-
-
-class _Tags:
-
-    def __getitem__(self, k):
-        assert k
-        ret = []
-        if 'n' in k:
-            ret += ['NN', 'NNS', 'NNP', 'NNPS']
-        if 'j' in k:
-            ret += ['JJ', 'JJR', 'JJS']
-        if 'v' in k:
-            ret += ['VB', 'VBD', 'VBG', 'VBN', 'VBZ', 'VBP']
-        if 'i' in k:
-            ret += ['i']
-        if 'r' in k:
-            ret += ['RB', 'RBR', 'RBS']
-        return tuple(ret)
-
-
-HACK_TAGS = _Tags()
+from .hack_util import HACK_TAGS, v
+from dpattack.libs.nlpaug.augmenter.word import ContextualWordEmbsAug
 
 
 class IHack:
     def __init__(self):
         self.config: Config
 
+        self.train_corpus: Corpus
         self.corpus: Corpus
 
         self.task: ParserTask
 
-        self.nn_tagger: PosTagger
-        self.trigram_tagger: TrigramTagger
-        self.crf_tagger: CRFTagger
-        self.tag_dict: dict
+        self.__nn_tagger: PosTagger = None
+        self.__trigram_tagger: TrigramTagger = None
+        self.__crf_tagger: CRFTagger = None
+        self.__tag_dict: dict = None
+        self.__bert_aug: ContextualWordEmbsAug = None
 
         self.embed_searcher: EmbeddingSearcher
 
         self.loader: DataLoader
+
+    @property
+    def nn_tagger(self) -> PosTagger:
+        if self.__nn_tagger is None:
+            self.__nn_tagger = PosTagger.load(
+                fetch_best_ckpt_name(self.config.tagger_model))
+        return self.__nn_tagger
+
+    @property
+    def trigram_tagger(self) -> TrigramTagger:
+        if self.__trigram_tagger is None:
+            self.__trigram_tagger = auto_create("trigram_tagger",
+                                                lambda: train_gram_tagger(
+                                                    self.train_corpus, ngram=3),
+                                                cache=True, path=self.config.workspace + '/saved_vars')
+        return self.__trigram_tagger
+
+    @property
+    def crf_tagger(self) -> CRFTagger:
+        if self.__crf_tagger is None:
+            self.__crf_tagger = CRFTagger()
+            self.__crf_tagger.set_model_file(self.config.crf_tagger_path)
+        return self.__crf_tagger
+
+    @property
+    def tag_dict(self) -> dict:
+        if self.__tag_dict is None:
+            self.__tag_dict = auto_create("tagdict3",
+                                          lambda: gen_tag_dict(
+                                              self.train_corpus, self.vocab, 3, False),
+                                          cache=True, path=self.config.workspace + '/saved_vars')
+            self.__tag_dict = {k: torch.tensor(v)
+                               for k, v in self.tag_dict.items()}
+        return self.__tag_dict
+
+    @property
+    def bert_aug(self) -> ContextualWordEmbsAug:
+        if self.__bert_aug is None:
+            self.__bert_aug = ContextualWordEmbsAug(model_path=self.config.path,
+                                                    top_k=512)
+        return self.__bert_aug
 
     @property
     def vocab(self) -> Vocab:
@@ -111,7 +123,6 @@ class IHack:
                 log(arg, '\t', config.kwargs[arg])
         log('------------------')
 
-
     def setup(self, config):
         self.config = config
 
@@ -119,31 +130,14 @@ class IHack:
         vocab = torch.load(config.vocab)  # type: Vocab
         parser = load_parser(fetch_best_ckpt_name(config.parser_model))
 
-        self.nn_tagger = PosTagger.load(
-            fetch_best_ckpt_name(config.tagger_model))
-
         self.task = ParserTask(vocab, parser)
 
         print("Load the dataset")
 
-        train_corpus = Corpus.load(config.ftrain)
-
-        self.tag_dict = auto_create("tagdict3",
-                                    lambda: gen_tag_dict(
-                                        train_corpus, vocab, 3, False),
-                                    cache=True, path=config.workspace + '/saved_vars')
-        self.tag_dict = {k: torch.tensor(v) for k, v in self.tag_dict.items()}
-
-        self.trigram_tagger = auto_create("trigram_tagger",
-                                          lambda: train_gram_tagger(
-                                              train_corpus, ngram=3),
-                                          cache=True, path=config.workspace + '/saved_vars')
-
-        self.crf_tagger = CRFTagger()
-        self.crf_tagger.set_model_file(config.crf_tagger_path)
+        self.train_corpus = Corpus.load(config.ftrain)
 
         if config.hk_training_set == 'on':
-            self.corpus = train_corpus
+            self.corpus = self.train_corpus
         else:
             self.corpus = Corpus.load(config.fdata)
         dataset = TextDataset(vocab.numericalize(self.corpus, True))
@@ -248,19 +242,8 @@ class IHack:
             #    All dists
             # -> Filtered by a tag dict
             # -> Smallest one
-            # vals, idxs = self.embed_searcher.find_neighbours(changed, 10, 'euc', False)
-            # print("⊥ {:.2f}, - {:.2f}, {} ~ {}, {}, {}".format(
-            #     vals.min().item(), vals.mean().item(),
-            #     *[self.vocab.words[idxs[i].item()] for i in range(4)]))
-            # show_mean_std(embed[word_vid])
-            # show_mean_std(max_grad)
             dist = {'euc': euc_dist, 'cos': cos_dist}[
                 dist_measure](changed, self.parser.embed.weight)
-            # print('>>> before moving')
-            # self.embed_searcher.find_neighbours(embed[word_vid],10, 'euc', True)
-            # print('>>> after moving')
-            # self.embed_searcher.find_neighbours(changed, 10, 'euc', True)
-
             # Mask illegal words by its POS
             tag_mask = self.__gen_tag_mask(must_tags, dist.device, dist.size())
 
@@ -278,5 +261,5 @@ class IHack:
             #    Bert select 256 words
             # -> Filtered by a tagger
             # -> Smallest one
+            rpl, _ = self.bert_aug.substitute('it is black friday', [0], n=256)
             raise NotImplementedError
-        

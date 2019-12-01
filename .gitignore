@@ -5,3 +5,7 @@ nogit/*
 **/__pycache__/*
 *.logs/*
 *.pstat
+*.tbz
+*.tgz
+*.zip
+*.rar
