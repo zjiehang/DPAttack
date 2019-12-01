@@ -59,7 +59,14 @@ class LanguageModels:
         probas = F.softmax(logits, dim=-1)
 
         # Draw candidates
-        top_n_ids = torch.multinomial(probas, num_samples=n, replacement=False).tolist()
+        # top_n_ids = torch.multinomial(probas, num_samples=n, replacement=False).tolist()
+        """
+        The torch.multinomial is rather slow, see https://github.com/pytorch/pytorch/issues/11931
+        After changing it to numpy, the speed can accelerate a lot.
+        Speed up: 3.221s/call -> 5e-6s/call
+        """
+        top_n_ids = np.random.choice(probas.size(0), n, False, probas.cpu().numpy()).tolist()
+        
         probas = probas.cpu() if self.device == 'cuda' else probas
         probas = probas.detach().data.numpy()
         top_n_probas = [probas[_id] for _id in top_n_ids]
