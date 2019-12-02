@@ -44,8 +44,8 @@ class HackSubtree(IHack):
         for sid, (words, tags, chars, arcs, rels) in enumerate(self.loader):
             # if sid > 100:
             #     continue
-            # if sid < 46:
-            #     continue
+            if sid < 26:
+                continue
 
             words_text = self.vocab.id2word(words[0])
             tags_text = self.vocab.id2tag(tags[0])
@@ -89,6 +89,8 @@ class HackSubtree(IHack):
 
             # exit()  # HIGHLIGHT:
 
+    # WARNING:
+    # By default, the returned value does not contain the <ROOT> node!!!
     def compute_margin(self, instance, mask_idxs=[]):
         self.parser.zero_grad()
         words, tags, chars, arcs, rels = instance
@@ -127,11 +129,51 @@ class HackSubtree(IHack):
 
         return ram_pop('embed_grad')
 
-    def select_spans(self, instance, sentence):
+    def select_src_span(self, instance, sentence, tgt_span, mode):
         minl = self.config.hks_min_span_len
         maxl = self.config.hks_max_span_len
         gap = self.config.hks_span_gap
-        if self.config.hks_span_selection == 'vul':
+        if mode == "closest":
+            spans = gen_spans(sentence)
+            src_span = None
+            src_picker = CherryPicker(lower_is_better=True)
+            for span in spans:
+                if minl <= span[1] + 1 - span[0] <= maxl:
+                    st_gap = max(tgt_span[0] - span[1], span[0] - tgt_span[1])
+                    if st_gap >= gap:
+                        src_picker.add(st_gap, span)
+            if src_picker.size == 0:
+                log('Source span not found')
+                return None
+            _, _, src_span = src_picker.select_best_point()
+            return src_span
+        elif mode == 'maxnorm':
+            sent_len = instance[0].size(1)
+            spans = gen_spans(sentence)
+            ex_tgt_idxs = [ele for ele in range(sent_len)
+                           if not tgt_span[0] <= ele <= tgt_span[1]]
+            embed_grad = self.backward_loss(instance, ex_tgt_idxs)
+            grad_norm = embed_grad.norm(dim=2)  # 1 x sent_len
+
+            src_picker = CherryPicker(lower_is_better=False)
+            for i in range(sent_len):
+                if minl <= spans[i][1] + 1 - spans[i][0] <= maxl:
+                    if spans[i][0] - tgt_span[1] >= gap or \
+                            tgt_span[0] - spans[i][1] >= gap:
+                        src_picker.add(grad_norm[0][spans[i][0]: spans[i][1]].mean(),
+                                       spans[i])
+            if src_picker.size == 0:
+                return None
+            _, _, src_span = src_picker.select_best_point()
+            return src_span
+        else:
+            raise Exception
+
+    def select_tgt_span(self, instance, sentence, mode):
+        minl = self.config.hks_min_span_len
+        maxl = self.config.hks_max_span_len
+        gap = self.config.hks_span_gap
+        if mode == 'vul':
             # Compute the ``vulnerable'' values of each words
             words, tags, chars, arcs, rels = instance
             sent_len = words.size(1)
@@ -142,7 +184,14 @@ class HackSubtree(IHack):
 
             # Count the vulnerable words in each span,
             # Select the most vulerable span as target.
-            vul_margins = [0] + [1 if 0 < ele < 1 else 0 for ele in margins]
+            vul_margins = [0]
+            for ele in margins:
+                if 0 < ele < 1:
+                    vul_margins.append(100)
+                elif 1 <= ele < 2:
+                    vul_margins.append(1)
+                else:
+                    vul_margins.append(-1)
             spans = gen_spans(sentence)
             span_vuls = list()
             span_ratios = list()
@@ -151,61 +200,21 @@ class HackSubtree(IHack):
                 span_ratios.append(span_vuls[-1] / (span[1] + 1 - span[0]))
             tgt_picker = CherryPicker(lower_is_better=False)
             for i in range(sent_len):
-                if minl <= spans[i][1] + 1 - spans[i][0] <= maxl and span_vuls[i] > 0:
+                if minl <= spans[i][1] + 1 - spans[i][0] <= maxl:
                     tgt_picker.add(span_vuls[i], spans[i])
             if tgt_picker.size == 0:
                 log('Target span not found')
                 return None
-            _, tgt_span_vul, tgt_span = tgt_picker.select_best_point()
+            _, _, tgt_span = tgt_picker.select_best_point()
+            return tgt_span
 
-            # Select the closest span as the src span
-            src_span = None
-            src_picker = CherryPicker(lower_is_better=True)
-            for span in spans:
-                if minl <= span[1] + 1 - span[0] <= maxl:
-                    if tgt_span[0] - span[1] > 0:
-                        st_gap = tgt_span[0] - span[1]
-                    elif gap or span[0] - tgt_span[1] > 0:
-                        st_gap = span[0] - tgt_span[1]
-                    if st_gap >= gap:
-                        src_picker.add(st_gap, span)
-            if src_picker.size == 0:
-                log('Source span not found')
-                return None
-            _, _, src_span = src_picker.select_best_point()
-            return src_span, tgt_span
-
-        elif self.config.hks_span_selection == "far":
+        elif mode == "rdm":
             spans = gen_spans(sentence)
-            valid_spans = [span for span in spans if minl <= span[1] + 1 - span[0] <= maxl]
-            if len(valid_spans) >= 2 and valid_spans[-1][0] > valid_spans[0][1]:
-                src_span = valid_spans[0]
-                tgt_span = valid_spans[-1]
-            else:
-                log('Not enough subtrees')
+            valid_spans = [span for span in spans if minl <=
+                           span[1] + 1 - span[0] <= maxl]
+            if len(valid_spans) == 0:
                 return None
-            return src_span, tgt_span
-
-        elif self.config.hks_span_selection == "close":
-            spans = gen_spans(sentence)
-            valid_spans = [span for span in spans if minl <= span[1] + 1 - span[0] <= maxl]
-            # log(valid_spans)
-            if len(valid_spans) >= 2 and valid_spans[-1][0] > valid_spans[0][1]:
-                src_span = valid_spans[0]
-                tgt_span = None
-                for span in valid_spans:
-                    if span[0] - src_span[1] >= gap:
-                        tgt_span = span
-                        break
-                if tgt_span is not None:
-                    return src_span, tgt_span
-                else:
-                    return None
-            else:
-                log('Not enough subtrees')
-                return None
-            return src_span, tgt_span
-
+            return random.choice(valid_spans)
         else:
             raise Exception
 
@@ -215,15 +224,21 @@ class HackSubtree(IHack):
         sent_len = words.size(1)
 
         ram_append('total', 1)
-        selected = self.select_spans(instance, sentence)
-        if selected is not None:
-            ram_append('good', 1)
-        if ram_has('good'):
-            log(sum(ram_read('good')), sum(ram_read('total')))
-        # return
-        if selected is None:
+        tgt_span = self.select_tgt_span(
+            instance, sentence, self.config.hks_tgt)
+        if tgt_span is None:
+            log('Target span not found')
             return
-        src_span, tgt_span = selected
+        src_span = self.select_src_span(
+            instance, sentence, tgt_span, self.config.hks_src)
+        if src_span is None:
+            log('Source span not found')
+            return
+        ram_append('good', 1)
+        if ram_has('good'):
+            log("Num of valid sentence by now {}/{}".format(
+                sum(ram_read('good')),
+                sum(ram_read('total'))))
 
         # sent_print(sentence, 'tablev')
         # print('spans', spans)

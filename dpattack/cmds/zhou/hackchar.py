@@ -112,12 +112,14 @@ class HackChar(IHackC):
 
         # char_grads, word_grad = self.backward_loss(words, chars, arcs, rels)
 
-        forbidden_idxs__ = defaultdict(lambda: deque(maxlen=5))    # word_sid -> deque()
+        forbidden_idxs__ = defaultdict(
+            lambda: deque(maxlen=5))    # word_sid -> deque()
         change_positions__ = dict()  # word_sid -> char_wid
         if self.config.hkc_max_change > 0.9999:
             max_change_num = int(self.config.hkc_max_change)
         else:
-            max_change_num = max(1, int(self.config.hkc_max_change * words.size(1)))
+            max_change_num = max(
+                1, int(self.config.hkc_max_change * words.size(1)))
         iter_change_num = min(max_change_num, self.config.hkc_iter_change)
 
         raw_chars = chars.clone()
@@ -274,7 +276,8 @@ class HackChar(IHackC):
                 change_positions__.pop(ele)
                 forbidden_idxs__.pop(ele)
                 chars[0][ele] = raw_chars[0][ele]
-                log('Drop elder replacement', self.vocab.words[words[i].item()])
+                log('Drop elder replacement',
+                    self.vocab.words[words[i].item()])
             selected_chars = []
             for ele in selected_words:
                 if ele in change_positions__:
@@ -299,14 +302,16 @@ class HackChar(IHackC):
             # Find a word to change with dynamically step
             # Note that it is possible that all words found are not as required, e.g.
             #   all neighbours have different tags.
-            delta = char_grad / torch.norm(char_grad) * self.config.hkc_step_size
+            delta = char_grad / \
+                torch.norm(char_grad) * self.config.hkc_step_size
             changed = emb_to_rpl - delta
 
             dist = {'euc': euc_dist, 'cos': cos_dist}[
                 self.config.hkc_dist_measure](changed, self.parser.char_lstm.embed.weight)
             vals, idxs = dist.sort()
             for ele in idxs:
-                if ele.item() not in forbidden_idxs__[word_sid.item()]:
+                if ele.item() not in forbidden_idxs__[word_sid.item()] and \
+                        ele.item() not in [self.vocab.pad_index, self.vocab.unk_index]:
                     new_char_vid = ele
                     break
 

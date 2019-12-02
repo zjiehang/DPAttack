@@ -75,6 +75,18 @@ class _Tags:
             ret += ['RB', 'RBR', 'RBS']
         return tuple(ret)
 
+    def get_coarse(self, k):
+        if k[:2] == 'NN':
+            return self['n']
+        elif k[:2] == 'JJ':
+            return self['j']
+        elif k[:2] == 'RB':
+            return self['r']
+        elif k[:2] == 'VB':
+            return self['v']
+        elif k[:2] == 'IN':
+            return self['i']
+
 
 HACK_TAGS = _Tags()
 

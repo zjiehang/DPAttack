@@ -47,7 +47,7 @@ class HackWhole(IHack):
         for sid, (words, tags, chars, arcs, rels) in enumerate(self.loader):
             # if sid in [0, 1, 2, 3, 4]:
             #     continue
-            # if sid > config.hk_sent_num:
+            # if sid < 1434:
             #     continue
             if self.config.hkw_use_worker == 'on':
                 if sid < start_sid or sid >= end_sid:
@@ -124,7 +124,8 @@ class HackWhole(IHack):
 
         # HIGHLIGHT: ITERATION
         t0 = time.time()
-        picker = CherryPicker(lower_is_better=True)
+        picker = CherryPicker(lower_is_better=True,
+                              compare_fn=lambda m1, m2: m1.uas - m2.uas)
         # iter 0 -> raw
         picker.add(raw_metric, {
             "num_changed": 0,
@@ -262,26 +263,14 @@ class HackWhole(IHack):
         word_vids = []  # type: list[torch.Tensor]
         new_word_vids = []  # type: list[torch.Tensor]
 
-        # if self.config.hkw_selection in ['max', 'orphan']:
-        #     _, topk_idxs = grad_norm[0].topk(1)
-        #     word_sids.append(topk_idxs[0])
-        # elif self.config.hkw_selection == 'twin':
-        #     _, topk_idxs = grad_norm[0].topk(2)
-        #     word_sids.append(topk_idxs[0])
-        #     if len(change_positions__.union({topk_idxs[0].item(), topk_idxs[1].item()})) <= max_change_num:
-        #         word_sids.append(topk_idxs[1])
-        # # elif self.config.hkw_selection == 'sample':
-        # #     _, topk_idxs = grad_norm[0].topk(3)
-        # #     word_sids.append(topk_idxs[Categorical(
-        # #         torch.tensor([0.7, 0.2, 0.1])).sample()])
-        # else:
-        #     raise Exception
-
         _, topk_idxs = grad_norm[0].sort(descending=True)
         selected_words = elder_select(ordered_idxs=cast_list(topk_idxs),
                                       num_to_select=iter_change_num,
                                       selected=change_positions__,
                                       max_num=max_change_num)
+        # The position mask will ensure that at least one word is legal,
+        # but the second one may not be allowed
+        selected_words = [ele for ele in selected_words if position_mask[ele] is False]
         word_sids = torch.tensor(selected_words)
 
         for word_sid in word_sids:
@@ -305,7 +294,8 @@ class HackWhole(IHack):
                 changed, must_tag, dist_measure=self.config.hkw_dist_measure,
                 forbidden_idxs__=forbidden_idxs__,
                 repl_method=self.config.hkw_repl_method,
-                words=words, word_sid=word_sid
+                words=words, word_sid=word_sid,
+                raw_words=raw_words
             )
 
             word_vids.append(word_vid)

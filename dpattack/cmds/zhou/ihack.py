@@ -30,7 +30,7 @@ from functools import lru_cache
 from nltk import TrigramTagger, CRFTagger
 from .hack_util import HACK_TAGS, v
 from dpattack.libs.nlpaug.augmenter.word import ContextualWordEmbsAug
-
+import numpy as np
 
 class IHack:
     def __init__(self):
@@ -89,7 +89,7 @@ class IHack:
     def bert_aug(self) -> ContextualWordEmbsAug:
         if self.__bert_aug is None:
             self.__bert_aug = ContextualWordEmbsAug(model_path=self.config.path,
-                                                    top_k=512)
+                                                    top_k=2048)
         return self.__bert_aug
 
     @property
@@ -158,13 +158,14 @@ class IHack:
         )
 
         random.seed(1)
+        np.random.seed(1)
         torch.manual_seed(1)
 
     def hack(self, instance, **kwargs):
         raise NotImplementedError
 
     @lru_cache(maxsize=None)
-    def __gen_tag_mask(self, tags: tuple, tsr_device, tsr_size):
+    def _gen_tag_mask(self, tags: tuple, tsr_device, tsr_size):
         word_idxs = []
         for tag in tags:
             if tag in self.tag_dict:
@@ -174,12 +175,21 @@ class IHack:
             .index_fill_(0, legal_tag_index, 1.).byte()
         return legal_tag_mask
 
+    @lru_cache(maxsize=10)
+    def _gen_bert_mask(self, text, idx, tsr_device, tsr_size):
+        bert_sub, _ = self.bert_aug.substitute(text, [idx], n=2000)
+        bert_sub_idxs = self.vocab.word2id(bert_sub[0]).to(tsr_device)
+        bert_mask = torch.zeros(tsr_size, device=tsr_device)\
+            .index_fill_(0, bert_sub_idxs, 1.).byte()
+        return bert_mask
+
     @torch.no_grad()
     def find_replacement(self,
                          changed, must_tags, dist_measure,
                          forbidden_idxs__,
                          repl_method='tagdict',
                          words=None, word_sid=None,  # Only need when using a tagger
+                         raw_words=None,
                          ) -> (Optional[torch.Tensor], dict):
         if must_tags is None:
             must_tags = tuple(self.vocab.tags)
@@ -237,17 +247,33 @@ class IHack:
                         break
             return new_word_vid, {"avgd": dists.mean().item(),
                                   "mind": dists.min().item()}
-        elif repl_method == 'tagdict':
+        elif repl_method in ['tagdict', 'bertag']:
             # Pipeline:
-            #    All dists
+            #    All dists/Bert filtered dists
             # -> Filtered by a tag dict
             # -> Smallest one
             dist = {'euc': euc_dist, 'cos': cos_dist}[
                 dist_measure](changed, self.parser.embed.weight)
-            # Mask illegal words by its POS
-            tag_mask = self.__gen_tag_mask(must_tags, dist.device, dist.size())
 
-            dist.masked_fill_(1 - tag_mask, 1000.)
+            # Mask illegal words by its POS
+            if repl_method == 'tagdict':
+                msk = self._gen_tag_mask(must_tags, dist.device, dist.size())
+            elif repl_method == 'bertag':
+                # coarse_tags = []
+                # for ele in must_tags:
+                #     coarse_tags.extend(HACK_TAGS.get_coarse(ele))
+                msk = self._gen_tag_mask(must_tags, dist.device, dist.size())
+                # Mask illegal words by BERT
+                bert_mask = self._gen_bert_mask(
+                    " ".join(self.vocab.id2word(raw_words)[1:]),
+                    word_sid.item() - 1,
+                    dist.device, dist.size())
+                # Fuck pytorch.
+                msk = msk * bert_mask
+            else:
+                raise Exception
+
+            dist.masked_fill_(1 - msk, 1000.)
             for ele in forbidden_idxs__:
                 dist[ele] = 1000.
             mindist = dist.min()
@@ -256,10 +282,5 @@ class IHack:
             else:
                 new_word_vid = dist.argmin()
             return new_word_vid, {}
-        elif repl_method == 'bert':
-            # Pipeline:
-            #    Bert select 256 words
-            # -> Filtered by a tagger
-            # -> Smallest one
-            rpl, _ = self.bert_aug.substitute('it is black friday', [0], n=256)
+        else:
             raise NotImplementedError
