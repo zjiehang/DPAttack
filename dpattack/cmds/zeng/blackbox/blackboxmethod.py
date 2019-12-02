@@ -77,7 +77,7 @@ class Substituting(BlackBoxMethod):
         candidates, indexes = self.check_pos_tag(seqs, tags, candidates, indexes)
         attack_seq, revised_number = self.check_uas(seqs, tag_idx, arcs, rels, candidates, indexes, raw_metric)
 
-        return [Corpus.ROOT] + attack_seq, mask, arcs, rels, revised_number
+        return [Corpus.ROOT] + attack_seq, tag_idx, mask, arcs, rels, revised_number
 
     def substituting(self, seq, index):
         try:
@@ -135,22 +135,25 @@ class Substituting(BlackBoxMethod):
         final_attack_seq = self.copy_str_to_list(seqs)
         revised_number = 0
         for index, candidate in zip(indexes, candidates):
-            succeed_flag = self.check_uas_under_each_index(seqs, tag_idx, arcs, rels, candidate, index, raw_metric)
-            if succeed_flag != CONSTANT.FALSE_TOKEN:
-                final_attack_seq[index] = candidate[succeed_flag]
-            else:
-                final_attack_seq[index] = candidate[0]
+            index_flag = self.check_uas_under_each_index(seqs, tag_idx, arcs, rels, candidate, index, raw_metric)
+            final_attack_seq[index] = candidate[index_flag]
             revised_number += 1
         return final_attack_seq, revised_number
 
     def check_uas_under_each_index(self, seqs, tag_idx, arcs, rels, candidate, index, raw_metric):
+        current_compare_uas = raw_metric.uas
+        current_index = CONSTANT.FALSE_TOKEN
         for i, cand in enumerate(candidate):
             attack_seqs = self.copy_str_to_list(seqs)
             attack_seqs[index] = cand
             attack_metric = self.get_metric_by_seqs(attack_seqs, tag_idx, arcs, rels)
-            if attack_metric.uas < raw_metric.uas:
-                return i
-        return CONSTANT.FALSE_TOKEN
+            if attack_metric.uas < current_compare_uas:
+                current_compare_uas = attack_metric.uas
+                current_index = i
+        if current_index == CONSTANT.FALSE_TOKEN:
+            return 0
+        else:
+            return current_index
 
     def get_metric_by_seqs(self, attack_seqs, tag_idx, arcs, rels):
         attack_seq_idx = self.vocab.word2id([Corpus.ROOT] + attack_seqs).unsqueeze(0)
@@ -316,11 +319,13 @@ class InsertingPunct(BlackBoxMethod):
         super(InsertingPunct, self).__init__(vocab)
 
         self.index = AttackIndexInsertingPunct(config, vocab)
+        self.COMMA_TAG_IDX = vocab.tag_dict[CONSTANT.COMMA]
 
     def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask, raw_metric=None):
         attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
 
         attack_index.sort(reverse=True)
+        attack_tags = cast_list(tag_idx)
         attack_mask = cast_list(mask)
         attack_arcs = cast_list(arcs)
         attack_rels = cast_list(rels)
@@ -328,19 +333,21 @@ class InsertingPunct(BlackBoxMethod):
 
         for index in attack_index:
             attack_seqs.insert(index, CONSTANT.COMMA)
+            attack_tags.insert(index + 1, self.COMMA_TAG_IDX)
             attack_mask.insert(index + 1, 0)
             attack_rels.insert(index + 1, 0)
             attack_arcs.insert(index + 1, 0)
             attack_arcs = [arc + 1 if arc > index else arc for arc in attack_arcs]
 
+        attack_tags = torch.tensor(attack_tags, dtype=tag_idx.dtype)
         attack_mask = torch.tensor(attack_mask, dtype=mask.dtype)
         attack_arcs = torch.tensor(attack_arcs, dtype=arcs.dtype)
         attack_rels = torch.tensor(attack_rels, dtype=rels.dtype)
-        attack_mask, attack_arcs, attack_rels = map(lambda x: x.unsqueeze(0) if len(x.shape) == 1 else x,
-                                                            [attack_mask, attack_arcs, attack_rels])
-        attack_mask, attack_arcs, attack_rels = map(lambda x: x.cuda() if torch.cuda.is_available() else x,
-                                                            [attack_mask, attack_arcs, attack_rels])
-        return [Corpus.ROOT] + attack_seqs, attack_mask, attack_arcs, attack_rels, len(attack_index)
+        attack_tags, attack_mask, attack_arcs, attack_rels = map(lambda x: x.unsqueeze(0) if len(x.shape) == 1 else x,
+                                                            [attack_tags, attack_mask, attack_arcs, attack_rels])
+        attack_tags, attack_mask, attack_arcs, attack_rels = map(lambda x: x.cuda() if torch.cuda.is_available() else x,
+                                                            [attack_tags, attack_mask, attack_arcs, attack_rels])
+        return [Corpus.ROOT] + attack_seqs, attack_tags, attack_mask, attack_arcs, attack_rels, len(attack_index)
 
 
 # class Deleting(BlackBoxMethod):
@@ -384,29 +391,32 @@ class DeletingPunct(BlackBoxMethod):
 
     def generate_attack_seq(self, seqs, seq_idx, tags, tag_idx, chars, arcs, rels, mask, raw_metric=None):
         gold_arcs = cast_list(arcs)
-        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, arcs, mask)
+        attack_index = self.index.get_attack_index(self.copy_str_to_list(seqs), seq_idx, tags, tag_idx, chars, gold_arcs, mask)
 
         attack_index.sort(reverse=True)
         attack_mask = cast_list(mask)
+        attack_tags = cast_list(tag_idx)
         attack_arcs = gold_arcs.copy()
         attack_rels = cast_list(rels)
         attack_seqs = self.copy_str_to_list(seqs)
 
         for index in attack_index:
             del attack_seqs[index]
+            del attack_tags[index + 1]
             del attack_mask[index + 1]
             del attack_arcs[index + 1]
             del attack_rels[index + 1]
             attack_arcs = [arc - 1 if arc > index else arc for arc in attack_arcs]
 
+        attack_tags = torch.tensor(attack_tags, dtype=tag_idx.dtype)
         attack_mask = torch.tensor(attack_mask, dtype=mask.dtype)
         attack_arcs = torch.tensor(attack_arcs, dtype=arcs.dtype)
         attack_rels = torch.tensor(attack_rels, dtype=rels.dtype)
-        attack_mask, attack_arcs, attack_rels = map(lambda x: x.unsqueeze(0) if len(x.shape) == 1 else x,
-                                                            [attack_mask, attack_arcs, attack_rels])
-        attack_mask, attack_arcs, attack_rels = map(lambda x: x.cuda() if torch.cuda.is_available() else x,
-                                                            [attack_mask, attack_arcs, attack_rels])
-        return [Corpus.ROOT] + attack_seqs, attack_mask, attack_arcs, attack_rels, len(attack_index)
+        attack_tags, attack_mask, attack_arcs, attack_rels = map(lambda x: x.unsqueeze(0) if len(x.shape) == 1 else x,
+                                                            [attack_tags, attack_mask, attack_arcs, attack_rels])
+        attack_tags, attack_mask, attack_arcs, attack_rels = map(lambda x: x.cuda() if torch.cuda.is_available() else x,
+                                                            [attack_tags, attack_mask, attack_arcs, attack_rels])
+        return [Corpus.ROOT] + attack_seqs, attack_tags, attack_mask, attack_arcs, attack_rels, len(attack_index)
 
 
 class CharTypo(BlackBoxMethod):
@@ -433,4 +443,4 @@ class CharTypo(BlackBoxMethod):
 
         attack_seq = self.aug.get_typos(origin_seqs, attack_index)
 
-        return [Corpus.ROOT] + attack_seq, mask, arcs, rels, len(attack_index)
+        return [Corpus.ROOT] + attack_seq, tag_idx, mask, arcs, rels, len(attack_index)

@@ -52,7 +52,7 @@ class Augmentation(Attack):
                 tags = self.get_tags_name(tag_idx)
                 mask = self.get_mask(seq_idx, self.vocab.pad_index, punct_list=self.vocab.puncts)
                 raw_metric = self.task.evaluate([(seq_idx, tag_idx, chars, arcs, rels)],mst=config.mst)
-                augmentation_seq, _,  _, _, _ = self.attack_seq_generator.generate_attack_seq(' '.join(seqs[1:]), seq_idx, tags, tag_idx, chars, arcs, rels, mask, raw_metric)
+                augmentation_seq, _,  _,  _, _, _ = self.attack_seq_generator.generate_attack_seq(' '.join(seqs[1:]), seq_idx, tags, tag_idx, chars, arcs, rels, mask, raw_metric)
                 augmentation_corpus.sentences.append(init_sentence(sentence.FORM, tuple(augmentation_seq[1:]), sentence.POS, sentence.HEAD, sentence.DEPREL))
 
         if config.input == 'char':

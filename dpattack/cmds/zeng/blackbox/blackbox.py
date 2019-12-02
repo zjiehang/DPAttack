@@ -50,7 +50,7 @@ class BlackBoxAttack(Attack):
                                                                             config.blackbox_index if config.blackbox_index == 'unk' else config.blackbox_pos_tag,
                                                                             config.revised_rate)
             else:
-                attack_corpus_save_path = '{}/black_{}_{}.conllx'.format(config.c,
+                attack_corpus_save_path = '{}/black_{}_{}.conllx'.format(config.result_path,
                                                                         config.blackbox_method,
                                                                          config.revised_rate)
         return attack_corpus_save_path
@@ -79,8 +79,6 @@ class BlackBoxAttack(Attack):
         success_numbers = 0
 
         for index, (seq_idx, tag_idx, chars, arcs, rels) in enumerate(loader):
-            if index == 0:
-                continue
             mask = self.get_mask(seq_idx, self.vocab.pad_index, punct_list=self.vocab.puncts)
             seqs = self.get_seqs_name(seq_idx)
             tags = self.get_tags_name(tag_idx)
@@ -129,7 +127,7 @@ class BlackBoxAttack(Attack):
 
             # for metric after attacking
             # generate the attack sentence under attack_index
-            attack_seq, attack_mask, attack_gold_arc, attack_gold_rel, revised_number = self.attack_seq_generator.generate_attack_seq(' '.join(seq[1:]), seq_idx, tag, tag_idx, chars, arcs, rels, mask, raw_metric)
+            attack_seq, attack_tag_idx, attack_mask, attack_gold_arc, attack_gold_rel, revised_number = self.attack_seq_generator.generate_attack_seq(' '.join(seq[1:]), seq_idx, tag, tag_idx, chars, arcs, rels, mask, raw_metric)
             # get the attack seq idx and tag idx
             attack_seq_idx = self.vocab.word2id(attack_seq).unsqueeze(0)
             if torch.cuda.is_available():
@@ -138,10 +136,9 @@ class BlackBoxAttack(Attack):
             if is_chars_judger(self.parser):
                 attack_chars = self.get_chars_idx_by_seq(attack_seq)
                 attack_loss, attack_metric = self.task.evaluate([(attack_seq_idx, None, attack_chars, arcs, rels)], mst=config.mst)
-                _, attack_arc, attack_rel = self.task.predict([(attack_seq_idx, tag_idx, attack_chars)], mst=config.mst)
+                _, attack_arc, attack_rel = self.task.predict([(attack_seq_idx, attack_tag_idx, attack_chars)], mst=config.mst)
             else:
-                attack_tag_idx = tag_idx.clone()
-                attack_loss, attack_metric = self.task.evaluate([(attack_seq_idx, attack_tag_idx, None, arcs, rels)], mst=config.mst)
+                attack_loss, attack_metric = self.task.evaluate([(attack_seq_idx, attack_tag_idx, None, attack_gold_arc, attack_gold_rel)], mst=config.mst)
                 _, attack_arc, attack_rel = self.task.predict([(attack_seq_idx, attack_tag_idx, None)], mst=config.mst)
             return raw_metric, attack_metric, attack_seq, attack_arc[0], attack_rel[0], revised_number
 
