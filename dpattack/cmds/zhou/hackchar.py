@@ -6,13 +6,14 @@ from typing import Optional, Union
 
 import torch
 from tabulate import tabulate
-from torch.utils.data import DataLoader
 from torch.distributions import Categorical
+from torch.utils.data import DataLoader
 
-from dpattack.libs.luna import (
-    Aggregator, CherryPicker, TrainingStopObserver, as_table, cast_list,
-    create_folder_for_file, fetch_best_ckpt_name, idx_to_msk, log, log_config,
-    ram_pop, ram_write, show_mean_std, time, time_stamp, locate_chunk)
+from dpattack.libs.luna import (Aggregator, CherryPicker, TrainingStopObserver,
+                                as_table, cast_list, create_folder_for_file,
+                                fetch_best_ckpt_name, idx_to_msk, locate_chunk,
+                                log, log_config, ram_pop, ram_write,
+                                show_mean_std, time, time_stamp)
 from dpattack.libs.luna.public import auto_create
 from dpattack.models import PosTagger, WordParser, WordTagParser
 from dpattack.task import ParserTask
@@ -25,67 +26,10 @@ from dpattack.utils.parser_helper import load_parser
 from dpattack.utils.tag_tool import gen_tag_dict
 from dpattack.utils.vocab import Vocab
 
-from .ihackc import IHackC, v, HACK_TAGS
+from .hack_util import elder_select, young_select, HACK_TAGS, v
+from .ihackc import IHackC
 
 torch.backends.cudnn.enabled = False
-
-
-def young_select(ordered_idxs=[5, 2, 1, 3, 0, 4],
-                 num_to_select=3,
-                 selected={2, 3, 4},
-                 max_num=4):
-    """
-    selected = set()
-    new_select, exc = young_select([5, 2, 1, 3, 0, 4], selected=selected)
-    assert new_select == [5, 2, 1] and exc == []
-    selected.update(set(new_select))
-    for ele in exc:
-        selected.remove(ele)
-    new_select, exc = young_select([5, 4, 0, 3, 1, 2], selected=selected)
-    assert new_select == [5, 4, 0] and exc == [2]
-    selected.update(set(new_select))
-    for ele in exc:
-        selected.remove(ele)
-    new_select, exc = young_select([3, 4, 0, 1, 2, 5], selected=selected)
-    assert(new_select == [3, 4, 0] and exc == [5])
-    """
-    new_select = ordered_idxs[:num_to_select]
-    # Remove words selected in this iteration
-    ex_cands = [ele for ele in selected if ele not in new_select]
-    # Sort other words
-    sorted_ex_cands = [ele for ele in ordered_idxs if ele in ex_cands]
-    return new_select, sorted_ex_cands[max_num - num_to_select:]
-
-
-def elder_select(ordered_idxs=[5, 2, 1, 3, 0, 4],
-                 num_to_select=3,
-                 selected={2, 3, 4},
-                 max_num=5):
-    """
-    selected = set()
-    new_select = elder_select([5, 2, 1, 3, 0, 4], selected=selected)
-    assert(new_select == [5, 2, 1])
-    selected.update(set(new_select))
-    new_select = elder_select([5, 2, 0, 3, 1, 4], selected=selected)
-    assert(new_select == [5, 2, 0])
-    selected.update(set(new_select))
-    new_select = elder_select([3, 4, 0, 1, 2, 5], selected=selected)
-    assert(new_select == [3, 0, 1])
-    """
-    ret = []
-    total_num = len(selected)
-    for ele in ordered_idxs:
-        if len(ret) == num_to_select:
-            break
-        if ele in selected:
-            ret.append(ele)
-        else:
-            if total_num == max_num:
-                continue
-            else:
-                ret.append(ele)
-                total_num += 1
-    return ret
 
 
 class HackChar(IHackC):
@@ -168,12 +112,14 @@ class HackChar(IHackC):
 
         # char_grads, word_grad = self.backward_loss(words, chars, arcs, rels)
 
-        forbidden_idxs__ = defaultdict(lambda: deque(maxlen=5))    # word_sid -> deque()
+        forbidden_idxs__ = defaultdict(
+            lambda: deque(maxlen=5))    # word_sid -> deque()
         change_positions__ = dict()  # word_sid -> char_wid
         if self.config.hkc_max_change > 0.9999:
             max_change_num = int(self.config.hkc_max_change)
         else:
-            max_change_num = max(1, int(self.config.hkc_max_change * words.size(1)))
+            max_change_num = max(
+                1, int(self.config.hkc_max_change * words.size(1)))
         iter_change_num = min(max_change_num, self.config.hkc_iter_change)
 
         raw_chars = chars.clone()
@@ -330,7 +276,8 @@ class HackChar(IHackC):
                 change_positions__.pop(ele)
                 forbidden_idxs__.pop(ele)
                 chars[0][ele] = raw_chars[0][ele]
-                log('Drop elder replacement', self.vocab.words[words[i].item()])
+                log('Drop elder replacement',
+                    self.vocab.words[words[i].item()])
             selected_chars = []
             for ele in selected_words:
                 if ele in change_positions__:
@@ -355,14 +302,16 @@ class HackChar(IHackC):
             # Find a word to change with dynamically step
             # Note that it is possible that all words found are not as required, e.g.
             #   all neighbours have different tags.
-            delta = char_grad / torch.norm(char_grad) * self.config.hkc_step_size
+            delta = char_grad / \
+                torch.norm(char_grad) * self.config.hkc_step_size
             changed = emb_to_rpl - delta
 
             dist = {'euc': euc_dist, 'cos': cos_dist}[
                 self.config.hkc_dist_measure](changed, self.parser.char_lstm.embed.weight)
             vals, idxs = dist.sort()
             for ele in idxs:
-                if ele.item() not in forbidden_idxs__[word_sid.item()]:
+                if ele.item() not in forbidden_idxs__[word_sid.item()] and \
+                        ele.item() not in [self.vocab.pad_index, self.vocab.unk_index]:
                     new_char_vid = ele
                     break
 

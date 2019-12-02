@@ -25,7 +25,8 @@ from dpattack.utils.parser_helper import load_parser
 from dpattack.utils.tag_tool import gen_tag_dict
 from dpattack.utils.vocab import Vocab
 
-from .ihack import IHack, v, HACK_TAGS
+from .ihack import IHack
+from .hack_util import v, HACK_TAGS, young_select, elder_select
 
 
 class HackWhole(IHack):
@@ -46,7 +47,7 @@ class HackWhole(IHack):
         for sid, (words, tags, chars, arcs, rels) in enumerate(self.loader):
             # if sid in [0, 1, 2, 3, 4]:
             #     continue
-            # if sid > config.hk_sent_num:
+            # if sid < 1434:
             #     continue
             if self.config.hkw_use_worker == 'on':
                 if sid < start_sid or sid >= end_sid:
@@ -100,8 +101,10 @@ class HackWhole(IHack):
 
     def hack(self, instance):
         words, tags, chars, arcs, rels = instance
-        _, raw_metric = self.task.evaluate([(words, tags, chars, arcs, rels)])
-        _, raw_arcs, _ = self.task.predict([(words, tags, None)])
+        _, raw_metric = self.task.evaluate([(words, tags, chars, arcs, rels)],
+                                           mst=self.config.hkw_mst == 'on')
+        _, raw_arcs, _ = self.task.predict(
+            [(words, tags, None)], mst=self.config.hkw_mst == 'on')
 
         # Setup some states before attacking a sentence
         # WARNING: Operations on variables n__global_ramambc__" passed to a function
@@ -109,18 +112,20 @@ class HackWhole(IHack):
         forbidden_idxs__ = [self.vocab.unk_index, self.vocab.pad_index]
         change_positions__ = set()
         orphans__ = set()
-        if isinstance(self.config.hkw_max_change, int):
-            max_change_num = self.config.hkw_max_change
-        elif isinstance(self.config.hkw_max_change, float):
-            max_change_num = int(self.config.hkw_max_change * words.size(1))
+        if self.config.hkw_max_change > 0.9999:
+            max_change_num = int(self.config.hkw_max_change)
         else:
-            raise Exception("hk_max_change must be a float or an int")
+            max_change_num = max(
+                1, int(self.config.hkw_max_change * words.size(1)))
+        iter_change_num = min(max_change_num, self.config.hkw_iter_change)
+
         var_words = words.clone()
         raw_words = words.clone()
 
         # HIGHLIGHT: ITERATION
         t0 = time.time()
-        picker = CherryPicker(lower_is_better=True)
+        picker = CherryPicker(lower_is_better=True,
+                              compare_fn=lambda m1, m2: m1.uas - m2.uas)
         # iter 0 -> raw
         picker.add(raw_metric, {
             "num_changed": 0,
@@ -132,6 +137,7 @@ class HackWhole(IHack):
                 raw_words=raw_words, raw_metric=raw_metric, raw_arcs=raw_arcs,
                 verbose=False,
                 max_change_num=max_change_num,
+                iter_change_num=iter_change_num,
                 iter_id=iter_id,
                 forbidden_idxs__=forbidden_idxs__,
                 change_positions__=change_positions__,
@@ -211,6 +217,7 @@ class HackWhole(IHack):
                     orphans__,
                     verbose=False,
                     max_change_num=1,
+                    iter_change_num=1,
                     iter_id=-1):
         sent_len = words.size(1)
 
@@ -256,20 +263,15 @@ class HackWhole(IHack):
         word_vids = []  # type: list[torch.Tensor]
         new_word_vids = []  # type: list[torch.Tensor]
 
-        if self.config.hkw_selection in ['max', 'orphan']:
-            _, topk_idxs = grad_norm[0].topk(1)
-            word_sids.append(topk_idxs[0])
-        elif self.config.hkw_selection == 'twin':
-            _, topk_idxs = grad_norm[0].topk(2)
-            word_sids.append(topk_idxs[0])
-            if len(change_positions__.union({topk_idxs[0].item(), topk_idxs[1].item()})) <= max_change_num:
-                word_sids.append(topk_idxs[1])
-        # elif self.config.hkw_selection == 'sample':
-        #     _, topk_idxs = grad_norm[0].topk(3)
-        #     word_sids.append(topk_idxs[Categorical(
-        #         torch.tensor([0.7, 0.2, 0.1])).sample()])
-        else:
-            raise Exception
+        _, topk_idxs = grad_norm[0].sort(descending=True)
+        selected_words = elder_select(ordered_idxs=cast_list(topk_idxs),
+                                      num_to_select=iter_change_num,
+                                      selected=change_positions__,
+                                      max_num=max_change_num)
+        # The position mask will ensure that at least one word is legal,
+        # but the second one may not be allowed
+        selected_words = [ele for ele in selected_words if position_mask[ele] is False]
+        word_sids = torch.tensor(selected_words)
 
         for word_sid in word_sids:
             word_grad = embed_grad[0][word_sid]
@@ -292,7 +294,8 @@ class HackWhole(IHack):
                 changed, must_tag, dist_measure=self.config.hkw_dist_measure,
                 forbidden_idxs__=forbidden_idxs__,
                 repl_method=self.config.hkw_repl_method,
-                words=words, word_sid=word_sid
+                words=words, word_sid=word_sid,
+                raw_words=raw_words
             )
 
             word_vids.append(word_vid)
@@ -306,17 +309,17 @@ class HackWhole(IHack):
                 exist_change = True
 
         if not exist_change:
-            if self.config.hkw_selection == 'orphan':
-                orphans__.add(word_sids[0])
-                log('iter {}, Add word {}\'s location to orphans.'.format(
-                    iter_id,
-                    self.vocab.words[raw_words[0][word_sid].item()]))
-                return {
-                    'code': '200',
-                    'words': words,
-                    'atack_metric': 100.,
-                    'logtable': 'This will be never selected'
-                }
+            # if self.config.hkw_selection == 'orphan':
+            #     orphans__.add(word_sids[0])
+            #     log('iter {}, Add word {}\'s location to orphans.'.format(
+            #         iter_id,
+            #         self.vocab.words[raw_words[0][word_sid].item()]))
+            #     return {
+            #         'code': '200',
+            #         'words': words,
+            #         'atack_metric': 100.,
+            #         'logtable': 'This will be never selected'
+            #     }
             log('Attack failed.')
             return {'code': 404,
                     'info': 'Neighbours of all selected words have different tags.'}
@@ -337,13 +340,15 @@ class HackWhole(IHack):
         new_words_text = [self.vocab.words[i.item()] for i in new_words[0]]
         # print(new_words_txt)
         loss, metric = self.task.evaluate(
-            [(new_words, tags, None, arcs, rels)])
+            [(new_words, tags, None, arcs, rels)],
+            mst=self.config.hkw_mst == 'on')
 
         def _gen_log_table():
             new_words_text = [self.vocab.words[i.item()] for i in new_words[0]]
             raw_words_text = [self.vocab.words[i.item()] for i in raw_words[0]]
             tags_text = [self.vocab.tags[i.item()] for i in tags[0]]
-            _, att_arcs, _ = self.task.predict([(new_words, tags, None)])
+            _, att_arcs, _ = self.task.predict(
+                [(new_words, tags, None)], mst=self.config.hkw_mst == 'on')
 
             table = []
             for i in range(sent_len):
@@ -351,8 +356,9 @@ class HackWhole(IHack):
                 raw_arc = 0 if i == 0 else raw_arcs[0][i - 1]
                 att_arc = 0 if i == 0 else att_arcs[0][i - 1]
 
-                relevant_mask = '&' if raw_words[0][att_arc] != new_words[0][
-                    att_arc] or raw_words_text[i] != new_words_text[i] else ""
+                relevant_mask = '&' if \
+                    raw_words[0][att_arc] != new_words[0][att_arc] or \
+                    raw_words_text[i] != new_words_text[i] else ""
                 table.append([
                     i,
                     raw_words_text[i],
