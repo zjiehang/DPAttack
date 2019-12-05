@@ -1,14 +1,14 @@
 import torch
 import numpy as np
 from dpattack.utils.corpus import Corpus
+from dpattack.utils.tag_tool import gen_tag_dict
 
 class RandomTagAug(object):
     def __init__(self,vocab, ftrain):
         np.random.seed(123)
         vocab = torch.load(vocab)
         train_corpus = Corpus.load(ftrain)
-        self.tag_dict = self.get_tag_dict(train_corpus,vocab)
-        self.choice_number = 10
+        self.tag_dict = gen_tag_dict(train_corpus,vocab,threshold=2,verbose=False)
 
     def get_tag_dict(self,corpus,vocab):
         tag_dict = dict()

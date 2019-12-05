@@ -15,12 +15,7 @@ from dpattack.utils.metric import ParserMetric as Metric
 class BlackBoxSubTree(Attack):
     def __init__(self):
         super(BlackBoxSubTree, self).__init__()
-        self.min_span_length = 4
-        self.max_span_length = 8
 
-        self.reivsed = 3
-        self.candidates = 256
-        self.isPermutation = False
 
     def get_span_length(self, span, length):
         if isinstance(span, int):
@@ -36,10 +31,20 @@ class BlackBoxSubTree(Attack):
     def get_attack_seq_generator(self, config):
         return RandomWordAug(config.vocab)
 
+    def init_config(self, config):
+        self.min_span_length = config.min_span_length
+        self.max_span_length = config.max_span_length
+        self.reivsed = config.reivsed
+        self.candidates = config.candidates
+        self.span_dist = config.span_dist
+        self.is_permutation = config.is_permutation
+
     def __call__(self, config):
         random.seed(1)
         np.random.seed(1)
         torch.manual_seed(1)
+
+        self.init_config(config)
 
         corpus, loader = self.pre_attack(config)
         self.parser.eval()
@@ -61,7 +66,7 @@ class BlackBoxSubTree(Attack):
             print('Result after attacking has saved in {}'.format(attack_corpus_save_path))
 
     def get_attack_corpus_saving_path(self, config):
-        path = "{}/subtree/{}_{}_{}.conllx".format(config.result_path, 'permutation' if self.isPermutation else 'random',self.reivsed, self.candidates)
+        path = "{}/subtree/{}_{}_{}.conllx".format(config.result_path, 'permutation' if self.is_permutation else 'random',self.reivsed, self.candidates)
         return path
 
     def attack(self, config, loader, corpus, attack_corpus):
@@ -72,6 +77,7 @@ class BlackBoxSubTree(Attack):
         span_number = 0
 
         for index, (seq_idx, tag_idx, chars, arcs, rels) in enumerate(loader):
+            print("Sentence {}".format(index + 1))
             start_time = time.time()
             mask = self.get_mask(seq_idx, self.vocab.pad_index, punct_list=self.vocab.puncts)
             seqs = self.get_seqs_name(seq_idx)
@@ -87,6 +93,9 @@ class BlackBoxSubTree(Attack):
                 filter_valid_spans = self.filter_spans(valid_spans)
 
                 spans_list_to_attack = self.get_span_to_attack(filter_valid_spans)
+                if len(spans_list_to_attack) == 0:
+                    print("Sentence {} doesn't has enough valid spans. Time: {:.2f}".format(index + 1, time.time() - start_time))
+                    continue
                 all_number += 1
                 succeed_flag = False
 
@@ -95,11 +104,11 @@ class BlackBoxSubTree(Attack):
                 raw_mask[0, 0] = False
                 raw_pred_arc, raw_pred_rel = self.task.decode(raw_s_rac, raw_s_rel, raw_mask, mst=config.mst)
 
-                for spans_to_attack in spans_list_to_attack:
+                for span_pair_index, spans_to_attack in enumerate(spans_list_to_attack):
                     src_span = spans_to_attack[0]
                     tgt_span = spans_to_attack[1]
 
-                    mask_idxes = list(range(0, tgt_span[0])) + list(range(tgt_span[1]+1,sentence_length+1))
+                    mask_idxes = list(range(0, tgt_span[0])) + [tgt_span[2]] + list(range(tgt_span[1]+1,sentence_length+1))
                     new_mask = self.update_mask(mask, mask_idxes)
 
                     # for batch compare , no used task.evaluate
@@ -124,11 +133,25 @@ class BlackBoxSubTree(Attack):
                     attack_non_equal_number_index = [count for count, pred in enumerate(attack_pred_arc_tgt) if torch.sum(torch.ne(pred, arcs[new_mask])).item() > raw_non_equal_number]
 
                     if len(attack_non_equal_number_index) != 0:
-                        print("Sentence {} attacked succeeded! Time: {:.2f}".format(index + 1, time.time()-start_time))
                         success += 1
                         non_equal_numbers = [torch.sum(torch.ne(attack_pred_arc_tgt[non_equal_number_index], arcs[new_mask])).item() for non_equal_number_index in attack_non_equal_number_index]
                         attack_succeed_index = sorted(range(len(non_equal_numbers)), key=lambda k: non_equal_numbers[k], reverse=True)[0]
                         attack_succeed_index = attack_non_equal_number_index[attack_succeed_index]
+
+                        success_index = ' '.join([str(random_index) for random_index in indexes[attack_succeed_index]])
+                        success_candidate = ' '.join([attack_seqs[attack_succeed_index][random_index] for random_index in indexes[attack_succeed_index]])
+                        print('Pair {}/{}, src span:({},{}), tgt span:({},{}) succeed'.format(span_pair_index + 1,
+                                                                                               len(spans_list_to_attack),
+                                                                                               src_span[0],
+                                                                                                src_span[1],
+                                                                                               tgt_span[0],
+                                                                                               tgt_span[1],
+                                                                                                success_candidate))
+                        print('indexes: {} candidates: {}'.format(success_index, success_candidate))
+                        print("Sentence {} attacked succeeded! Time: {:.2f}s , Success Rate:{:.2f}%".format(index + 1,
+                                                                                                          time.time() - start_time,
+                                                                                                          success / all_number * 100))
+
                         attack_metric = Metric()
                         attack_metric(attack_pred_arc[attack_succeed_index].unsqueeze(0)[mask], attack_pred_rel[attack_succeed_index].unsqueeze(0)[mask],arcs[mask], rels[mask])
                         if config.save_result_to_file:
@@ -144,13 +167,15 @@ class BlackBoxSubTree(Attack):
                                                                self.vocab.id2rel(rels)[1:],
                                                                cast_list(attack_pred_arc[attack_succeed_index])[1:],
                                                                self.vocab.id2rel(attack_pred_rel[attack_succeed_index])[1:]))
+                            print('\n'.join('\t'.join(map(str, i)) for i in zip(*(f for f in attack_corpus[-1] if f))))
                         succeed_flag = True
                         break
+                    print('Pair {}/{}, src span:({},{}), tgt span:({},{}) failed! '.format(span_pair_index+1,len(spans_list_to_attack),src_span[0],src_span[1],tgt_span[0],tgt_span[1]))
 
                 raw_metric = Metric()
                 raw_metric(raw_pred_arc[mask], raw_pred_rel[mask], arcs[mask], rels[mask])
                 if not succeed_flag:
-                    print("Sentence {} attacked failed! Time: {:.2f}".format(index + 1, time.time() - start_time))
+                    print("Sentence {} attacked failed! Time: {:.2f}s, Success Rate:{:.2f}%".format(index + 1, time.time() - start_time,success / all_number * 100))
                     attack_metric = raw_metric
                 raw_metric_all += raw_metric
                 attack_metric_all += attack_metric
@@ -161,9 +186,8 @@ class BlackBoxSubTree(Attack):
         print("Average: {}".format(span_number / all_number))
 
     def get_valid_spans(self, spans, roots, length):
-        return [span for index, span in enumerate(spans) if
-                #index not in roots
-                #and
+        return [span
+                for index, span in enumerate(spans) if
                 self.get_span_length(self.min_span_length, length) <= span[1] + 1 - span[0] <= self.get_span_length(self.max_span_length, length)]
 
     def filter_spans(self, valid_spans):
@@ -180,21 +204,22 @@ class BlackBoxSubTree(Attack):
         return filter_valid_spans
 
     def get_span_to_attack(self, valid_spans):
-        return self.get_permutation_spans_to_attack(valid_spans) if self.isPermutation else self.get_random_spans_to_attack(valid_spans)
+        return self.get_permutation_spans_to_attack(valid_spans) if self.is_permutation else self.get_random_spans_to_attack(valid_spans)
         # span_end_dict = defaultdict(lambda: list())
         # for span in valid_spans:
         #     span_end_dict[span[1]].append(span)
         # if len(span_end_dict) < 2:
         #     return []
-        # attack_span_list = self.get_permutation_spans_to_attack(span_end_dict) if self.isPermutation else self.get_random_spans_to_attack(span_end_dict)
+        # attack_span_list = self.get_permutation_spans_to_attack(span_end_dict) if self.is_permutation else self.get_random_spans_to_attack(span_end_dict)
         # return attack_span_list
 
     def get_permutation_spans_to_attack(self, valid_spans):
         attack_span_list = []
-        for span_start in valid_spans:
-            for span_end in valid_spans:
-                if span_start!=span_end:
+        for index, span_start in enumerate(valid_spans):
+            for span_end in valid_spans[index + 1:]:
+                if span_end[0] - span_start[1] >= self.span_dist:
                     attack_span_list.append((span_start, span_end))
+                    attack_span_list.append((span_end, span_start))
         return attack_span_list
         # attack_span_list = []
         # span_end_key = list(span_end_dict.keys())
@@ -207,12 +232,10 @@ class BlackBoxSubTree(Attack):
         # return attack_span_list
 
     def get_random_spans_to_attack(self, valid_spans):
-        span_index = np.random.choice(list(range(len(valid_spans))),2,replace=False)
-        return [(valid_spans[span_index[0]], valid_spans[span_index[1]])]
-        # src_span_end, tgt_span_end = np.random.choice(list(span_end_dict.keys()),2,replace=False)
-        # src_span = random.choice(span_end_dict[src_span_end])
-        # tgt_span = random.choice(span_end_dict[tgt_span_end])
-        # return [(src_span, tgt_span)]
+        attack_span_list = self.get_permutation_spans_to_attack(valid_spans)
+        if len(attack_span_list) == 0:
+            return []
+        return [random.choice(attack_span_list)]
 
     def update_mask(self, mask, mask_idxes):
         new_mask = mask.clone()
@@ -307,7 +330,7 @@ class BlackBoxSubTree(Attack):
                 else:
                     return _find_span_id(r_children[idx][-1], 'r')
 
-        spans = [(_find_span_id(idx, 'l'), _find_span_id(idx, 'r'))
+        spans = [(_find_span_id(idx, 'l'), _find_span_id(idx, 'r'), idx)
                  for idx in range(sent_len)]
         # print(headed_span)
 

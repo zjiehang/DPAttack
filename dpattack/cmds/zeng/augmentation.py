@@ -22,7 +22,7 @@ class Augmentation(Attack):
             if method == 'insert':
                 return InsertingPunct(config, self.vocab)
             elif method == 'substitute':
-                return Substituting(config, self.vocab)
+                return Substituting(config, self.task, self.vocab)
             elif method == 'delete':
                 return DeletingPunct(config, self.vocab)
 

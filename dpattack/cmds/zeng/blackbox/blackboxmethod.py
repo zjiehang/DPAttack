@@ -82,7 +82,7 @@ class Substituting(BlackBoxMethod):
     def substituting(self, seq, index):
         try:
             # generate the attack sentence by index
-            candidates, revised_indexes = self.aug.substitute(seq, aug_idxes=index,n=64)
+            candidates, revised_indexes = self.aug.substitute(seq, aug_idxes=index,n=99)
         except Exception:
             try:
                 # if error happens, generate the attack sentence by random
