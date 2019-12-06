@@ -49,10 +49,10 @@ class HackWhole(IHack):
             #     continue
             # if sid < 1434:
             #     continue
-            if self.config.hkw_use_worker == 'on':
+            if self.config.hk_use_worker == 'on':
                 if sid < start_sid or sid >= end_sid:
                     continue
-            if self.config.hkw_training_set == 'on' and words.size(1) > 50:
+            if self.config.hk_training_set == 'on' and words.size(1) > 50:
                 log('Skip sentence {} whose length is {}(>50).'.format(
                     sid, words.size(1)))
                 continue

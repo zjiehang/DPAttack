@@ -92,7 +92,8 @@ class ParserTask(Task):
     @torch.no_grad()
     def partial_evaluate(self, instance: tuple,
                          mask_idxs: List[int],
-                         punct=False, tagger=None, mst=False):
+                         punct=False, tagger=None, mst=False, 
+                         return_metric=True):
         self.model.eval()
 
         loss, metric = 0, ParserMetric()
@@ -114,10 +115,11 @@ class ParserTask(Task):
 
         # mask given indices
         for idx in mask_idxs:
-            mask[0][idx] = 0
+            mask[:, idx] = 0
 
         pred_arcs, pred_rels = self.decode(s_arc, s_rel, decode_mask, mst)
 
+        # punct is ignored !!!
         pred_arcs, pred_rels = pred_arcs[mask], pred_rels[mask]
         gold_arcs, gold_rels = arcs[mask], rels[mask]
 
@@ -137,7 +139,12 @@ class ParserTask(Task):
         # loss += self.get_loss(s_arc, s_rel, gold_arcs, gold_rels)
         metric(pred_arcs, pred_rels, gold_arcs, gold_rels)
 
-        return metric
+        if return_metric:
+            return metric
+        else:
+            return pred_arcs.view(words.size(0), -1), pred_rels.view(words.size(0), -1), \
+                   gold_arcs.view(words.size(0), -1), gold_rels.view(words.size(0), -1)
+
     # <<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<
 
     @torch.no_grad()

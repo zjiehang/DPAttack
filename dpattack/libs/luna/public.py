@@ -492,7 +492,7 @@ class Aggregator:
             reduce_fn = np.sum
         elif reduce == 'std':
             reduce_fn = np.std
-        elif isinstance(reduce, callable):
+        elif inspect.isfunction(reduce):
             reduce_fn = reduce
         else:
             raise Exception(

@@ -13,7 +13,6 @@ The values to store in a RAM have the below features:
 
 __global_ram = {}
 
-
 def ram_write(k, v):
     __global_ram[k] = v
 

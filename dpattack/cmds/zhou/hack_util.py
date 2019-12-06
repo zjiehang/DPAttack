@@ -1,3 +1,4 @@
+import numpy as np
 
 
 def young_select(ordered_idxs=[5, 2, 1, 3, 0, 4],
@@ -59,7 +60,6 @@ def elder_select(ordered_idxs=[5, 2, 1, 3, 0, 4],
 
 
 class _Tags:
-
     def __getitem__(self, k):
         assert k
         ret = []
@@ -90,7 +90,6 @@ class _Tags:
 
 HACK_TAGS = _Tags()
 
-
 # Code for fucking VSCode debug console
 
 
@@ -101,3 +100,33 @@ class V:
 
 
 v = V()
+
+# ===================================================================
+#   Below are helper functions for blackbox settings
+# ===================================================================
+
+# legal_words = list(range(30000))
+
+
+def gen_idxs_to_substitute(start, end, repl_num, cand_num):
+    return np.stack([
+        np.random.choice(list(range(start, end)), replace=False, size=repl_num)
+        for _ in range(cand_num)
+    ])
+
+
+def subsitute_by_idxs(words, idxs, vocab_idxs):
+    ret = []
+    cand_num = len(idxs)
+    repl_num = len(idxs[0])
+    to_repl = np.random.choice(vocab_idxs, size=cand_num * repl_num)
+    to_repl_id = 0
+
+    for i in range(cand_num):
+        tmp = words.copy()
+        for j in range(repl_num):
+            tmp[idxs[i][j]] = to_repl[to_repl_id]
+            to_repl_id += 1
+        ret.append(tmp)
+    return ret
+

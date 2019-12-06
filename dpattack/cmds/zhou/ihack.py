@@ -107,8 +107,7 @@ class IHack:
                                               config.hk_worker_id)
             else:
                 worker_info = ""
-            log_config('{}-{}-{}{}'.format(config.mode,
-                                           config.input, config.hk_tag_type, worker_info),
+            log_config('{}{}'.format(config.mode, worker_info),
                        log_path=config.workspace,
                        default_target='cf')
             from dpattack.libs.luna import log
@@ -157,9 +156,9 @@ class IHack:
             word2idx=lambda x: self.vocab.word_dict[x]
         )
 
-        random.seed(1)
-        np.random.seed(1)
-        torch.manual_seed(1)
+        random.seed(self.config.seed)
+        np.random.seed(self.config.seed)
+        torch.manual_seed(self.config.seed)
 
     def hack(self, instance, **kwargs):
         raise NotImplementedError

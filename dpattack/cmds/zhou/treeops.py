@@ -1,4 +1,36 @@
 from dpattack.utils.corpus import Corpus, Sentence, sent_print
+from collections import defaultdict
+
+
+def check_gap(span_a, span_b, gap):
+    return span_a[0] - span_b[1] >= gap or span_b[0] - span_a[1] >= gap
+
+
+def get_gap(span_a, span_b):
+    return max(span_a[0] - span_b[1], span_b[0] - span_a[1])
+
+
+def filter_spans(spans, minl, maxl, trim=True, add_head=True):
+    if add_head:
+        hspans = []
+        for sid, span in enumerate(spans):
+            hspans.append((span[0], span[1], sid))
+        spans = hspans
+    spans = list(filter(lambda ele: minl <= ele[1] + 1 - ele[0] <= maxl, spans))
+    if trim:
+        ret = []
+        for span in spans:
+            if len(ret) != 0 and ret[-1][0] <= span[0] and ret[-1][1] >= span[1]:
+                continue
+            else:
+                ret.append(span)
+    else:
+        ret = spans
+    return ret
+
+
+def ex_span_idx(span, sent_len):
+    return [i for i in range(sent_len) if (not span[0] <= i <= span[1]) or i == span[2]]
 
 
 def gen_spans(sent: Sentence):
@@ -40,8 +72,7 @@ def gen_spans(sent: Sentence):
             else:
                 return _find_span_id(r_children[idx][-1], 'r')
 
-    spans = [(_find_span_id(idx, 'l'), _find_span_id(idx, 'r'))
-             for idx in range(sent_len)]
+    spans = [(_find_span_id(idx, 'l'), _find_span_id(idx, 'r')) for idx in range(sent_len)]
     # print(headed_span)
 
     # headed_span_length = [right - left + 1 for left, right in headed_span]
@@ -50,51 +81,51 @@ def gen_spans(sent: Sentence):
 
 
 def subtree_distribution(corpus: Corpus):
-    print(corpus[4])
-    print(gen_spans(corpus[4]))
-    exit()
-    min_span_len = 5
-    max_span_len = 10
-    # num = 0
+    dist = defaultdict(lambda: 0)
+    all_lens = []
     for sid, sent in enumerate(corpus):
-        if len(sent.ID) < 15:
-            continue
-        min_span_len = len(sent.ID) * 0.2
-        max_span_len = len(sent.ID) * 0.4
-        span = gen_spans(sent)
-        span = list(filter(lambda ele: min_span_len <=
-                           ele[1] - ele[0] <= max_span_len, span))
-        # num += len(span)
-
-        print(len(sent.ID), len(span))
-        if sid == 10:
-            print()
-            exit()
+        spans = gen_spans(sent)
+        for span in spans:
+            dist[span[1] - span[0] + 1] += 1
+            # all_lens.append(span[1] - span[0] + 1)
+            # if 2 < span[1] - span[0] + 1 < len(sent.ID) / 2:
+            all_lens.append(span[1] - span[0] + 1)
+    for k in range(25):
+        print(k, '->', dist[k])
+    # print(all_lens)
+    import numpy as np
+    print(np.mean(all_lens))
+    print(np.std(all_lens))
+    print(np.median(all_lens))
 
 
 if __name__ == "__main__":
     # Corpus.load('/home/zhouyi/en_ewt-ud-test.txt')
     # exit()
 
-    corpus = Corpus.load("/disks/sdb/zjiehang/zhou_data/ptb/ptb_test_3.3.0.sd")
-    min_span_len = 5
-    max_span_len = 10
-    tt = 0
-    for sid, sent in enumerate(corpus):
-        if len(sent.ID) < 15:
-            continue
-        # min_span_len = len(sent.ID) * 0.2
-        # max_span_len = len(sent.ID) * 0.3
-        min_span_len = 5
-        max_span_len = 8
-        span = gen_spans(sent)
-        span = list(filter(lambda ele: min_span_len <= ele[1] - ele[0] <= max_span_len, span))
-        # num += len(span)
+    # spans = [(2, 5), (7, 10), (11, 14), (16, 23), (19, 23), (20, 23), (28, 33), (38, 41)]
+    # print(filter_spans(spans))
 
-        if len(span) >= 2:
-            tt += 1
-        print(len(sent.ID), len(span), min_span_len)
-        # if sid == 100:
-        #     print()
-        #     break
-    print(tt)
+    corpus = Corpus.load("/disks/sdb/zjiehang/zhou_data_new/ptb/ptb_test_3.3.0.sd")
+    subtree_distribution(corpus)
+    # min_span_len = 5
+    # max_span_len = 10
+    # tt = 0
+    # for sid, sent in enumerate(corpus):
+    #     if len(sent.ID) < 15:
+    #         continue
+    #     # min_span_len = len(sent.ID) * 0.2
+    #     # max_span_len = len(sent.ID) * 0.3
+    #     min_span_len = 5
+    #     max_span_len = 8
+    #     span = gen_spans(sent)
+    #     span = list(filter(lambda ele: min_span_len <= ele[1] - ele[0] <= max_span_len, span))
+    #     # num += len(span)
+
+    #     if len(span) >= 2:
+    #         tt += 1
+    #     print(len(sent.ID), len(span), min_span_len)
+    #     # if sid == 100:
+    #     #     print()
+    #     #     break
+    # print(tt)
