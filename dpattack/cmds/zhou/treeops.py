@@ -82,21 +82,14 @@ def gen_spans(sent: Sentence):
 
 def subtree_distribution(corpus: Corpus):
     dist = defaultdict(lambda: 0)
-    all_lens = []
+
     for sid, sent in enumerate(corpus):
         spans = gen_spans(sent)
-        for span in spans:
-            dist[span[1] - span[0] + 1] += 1
-            # all_lens.append(span[1] - span[0] + 1)
-            # if 2 < span[1] - span[0] + 1 < len(sent.ID) / 2:
-            all_lens.append(span[1] - span[0] + 1)
-    for k in range(25):
-        print(k, '->', dist[k])
-    # print(all_lens)
-    import numpy as np
-    print(np.mean(all_lens))
-    print(np.std(all_lens))
-    print(np.median(all_lens))
+        dist[len(filter_spans(spans, 4, 12))] += 1
+    total = sum(dist.values())
+    for k in range(10):
+        print(k, '->', dist[k] / total * 100)
+    # print(dist)
 
 
 if __name__ == "__main__":

@@ -2,8 +2,9 @@ from dpattack.utils.corpus import Corpus, init_sentence
 import re
 
 
-log_file_path = '/disks/sdb/zjiehang/zhou_data/hackwhole-logit-8-1.Nov19_05-04-53.txt'
-raw_corpus = Corpus.load("/disks/sdb/zjiehang/zhou_data/ptb/ptb_test_3.3.0.sd")
+log_file_path = 'bertag.json.logs/task-5.txt'
+raw_corpus = Corpus.load("/disks/sdb/zjiehang/zhou_data_new/ptb/ptb_test_3.3.0.sd")
+# raw_corpus = Corpus.load("/disks/sdb/zjiehang/zhou_data_new/ptb/ptb_train_3.3.0.sd")
 log_file = open(log_file_path)
 out_file = open(log_file_path + '.conll', 'w')
 
@@ -63,53 +64,3 @@ while True:
             f'{sentence.ID[i]}\t{words[i] if exists_log else sentence.FORM[i]}\t_\t{sentence.POS[i]}\t{sentence.POS[i]}\t'
             f'_\t{sentence.HEAD[i]}\t{sentence.DEPREL[i]}\t_\t_\t\n')
     out_file.write('\n')
-
-
-
-
-exit()
-
-# current_line = 0
-# for index, sentence in enumerate(raw_corpus.sentences):
-#     try:
-#         while True:
-#             line = lines[current_line].strip()
-#             current_line += 1
-#             if line.find("******") != -1:
-#                 break
-#         print("Found Sentence {}: {}".format(index, line))
-#         exist_in_log = False
-#         while True:
-#             current_line += 1
-#             line = lines[current_line].strip()
-#             if line.find("------------") != -1:
-#                 exist_in_log = True
-#                 break
-#             if line.find("******") != -1:
-#                 exist_in_log = False
-#                 break
-#         if exist_in_log:
-#             current_line += 2
-#             seqs = []
-#             line = lines[current_line]
-#             while line.find("------------") == -1:
-#                 split = line.split()
-#                 if split[2] == '*':
-#                     seqs.append(split[1])
-#                 else:
-#                     seqs.append(split[2][1:])
-#                 current_line += 1
-#                 line = lines[current_line]
-
-#             print("Sentence {} exists in log!".format(index))
-#         else:
-#             print("Sentence {} do not exists in log!".format(index))
-#             seqs = sentence.FORM
-#         print(' '.join(sentence.FORM))
-#         print(' '.join(seqs))
-#         att_corpus.append(init_sentence(
-#             tuple(seqs), sentence.CPOS, sentence.HEAD, sentence.DEPREL))
-#     except:
-#         print('Exception occured ')
-#         break
-# att_corpus.save('test.conllx')

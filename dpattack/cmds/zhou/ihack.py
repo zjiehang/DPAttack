@@ -258,9 +258,6 @@ class IHack:
             if repl_method == 'tagdict':
                 msk = self._gen_tag_mask(must_tags, dist.device, dist.size())
             elif repl_method == 'bertag':
-                # coarse_tags = []
-                # for ele in must_tags:
-                #     coarse_tags.extend(HACK_TAGS.get_coarse(ele))
                 msk = self._gen_tag_mask(must_tags, dist.device, dist.size())
                 # Mask illegal words by BERT
                 bert_mask = self._gen_bert_mask(

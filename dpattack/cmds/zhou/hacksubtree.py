@@ -29,7 +29,7 @@ from .ihack import HACK_TAGS, IHack, v
 from .hack_util import elder_select
 from .treeops import gen_spans, filter_spans
 from dpattack.cmds.zhou.treeops import check_gap, ex_span_idx, get_gap
-from dpattack.cmds.zhou.hack_util import gen_idxs_to_substitute, subsitute_by_idxs
+from dpattack.cmds.zhou.hack_util import gen_idxs_to_substitute, subsitute_by_idxs, subsitute_by_idxs_2
 from functools import lru_cache
 
 
@@ -37,11 +37,21 @@ class HackSubtree(IHack):
 
     # tag_type: njvri
     @lru_cache(maxsize=None)
-    def tagged_sub_idxs(self, tag_type):
+    def njvri_subidxs(self, njvri_tags):
         ret = []
-        for t in tag_type:
-            for real_t in HACK_TAGS[t]:
-                ret.extend(cast_list(self.tag_dict[real_t]))
+        for t in njvri_tags:
+            for ptb_tag in HACK_TAGS[t]:
+                if ptb_tag in self.tag_dict:
+                    ret.extend(cast_list(self.tag_dict[ptb_tag]))
+        return ret
+
+    # tag_type: univ
+    @lru_cache(maxsize=None)
+    def univ_subidxs(self, univ_tag):
+        ret = []
+        for ptbtag in HACK_TAGS.uni2ptb(univ_tag):
+            if ptbtag in self.tag_dict:
+                ret.extend(cast_list(self.tag_dict[ptbtag]))
         return ret
 
     def __call__(self, config):
@@ -52,15 +62,20 @@ class HackSubtree(IHack):
             [self.vocab.pad_index, self.vocab.unk_index, self.vocab.word_dict['<root>']]
         ]
 
-        raw_metrics = ParserMetric()
-        attack_metrics = ParserMetric()
-
         agg = Aggregator()
         for sid, (words, tags, chars, arcs, rels) in enumerate(self.loader):
             # if sid > 100:
             #     continue
-            # zjh = 738
-            # if sid < zjh - 1 or sid > zjh - 1:
+            # zjh = [
+            #     20, 41, 46, 117, 137, 143, 183, 198, 258, 295, 310, 350, 410, 421, 464, 485, 512,
+            #     528, 544, 600, 601, 681, 702, 728, 735, 738, 762, 783, 794, 803, 805, 821, 844, 845,
+            #     921, 931, 937, 939, 948, 962, 968, 975, 1019, 1044, 1068, 1069, 1096, 1104, 1121,
+            #     1122, 1138, 1142, 1155, 1163, 1180, 1197, 1224, 1228, 1270, 1272, 1292, 1306, 1315,
+            #     1317, 1342, 1345, 1393, 1400, 1431, 1478, 1503, 1522, 1524, 1526, 1608, 1677, 1729,
+            #     1759, 1775, 1795, 1811, 1831, 1925, 1929, 1983, 1984, 2026, 2031, 2176, 2234, 2291,
+            #     2296, 2318, 2327, 2330, 2342, 2343, 2355, 2360
+            # ]
+            # if sid + 1 not in zjh:
             #     continue
             # if sid > 600 - 1:
             #     continue
@@ -74,15 +89,12 @@ class HackSubtree(IHack):
 
             if result is None:
                 continue
-            else:
-                raw_metrics += result['raw_metric']
-                attack_metrics += result['attack_metric']
 
             # yapf: disable
             agg.aggregate(
                 ("iters", result['iters']),
                 ("time", result['time']),
-                ("succ", result['attack_metric'].uas < result['raw_metric'].uas),
+                ("succ", result['succ']),
                 ('best_iter', result['best_iter']),
                 ("changed", result['num_changed']),
                 ("att_id", result['att_id']),
@@ -98,16 +110,15 @@ class HackSubtree(IHack):
                 log('Show result from iter {}:'.format(result['best_iter']))
                 log(result['logtable'])
 
-            log('Aggregated result: {} --> {}, '
+            log('Aggregated result: '
                 'iters(avg) {:.1f}, time(avg) {:.1f}s, meta_time(avg) {:.1f}s, '
                 'succ rate {:.2f}% ({}/{}), best_iter(avg) {:.1f}, best_iter(std) {:.1f}, '
                 'changed(avg) {:.1f}, '
                 'total pair {}, trial pair {}, '
                 'succ total pair {}, succ trial pair {}, '
                 'succ att id {}'.format(
-                    raw_metrics, attack_metrics,
                     agg.mean('iters'), agg.mean('time'), agg.mean('meta_time'),
-                    agg.mean('succ')*100, agg.sum('succ'), agg.size,
+                    agg.mean('succ') * 100, agg.sum('succ'), agg.size,
                     agg.mean('best_iter'), agg.std('best_iter'),
                     agg.mean('changed'),
                     agg.sum('meta_total_pair'), agg.sum('meta_trial_pair'),
@@ -413,6 +424,7 @@ class HackSubtree(IHack):
         t0 = time.time()
         picker.add(raw_metric, {"num_changed": 0, "logtable": 'No modification'})
         log('iter -1, uas {:.4f}'.format(raw_metric.uas))
+        succ = False
         for iter_id in range(self.config.hks_steps):
             result = self.single_hack(instance=(var_words, tags, None, arcs, rels),
                                       raw_words=raw_words,
@@ -432,6 +444,7 @@ class HackSubtree(IHack):
                     "num_changed": len(change_positions__)
                 })
                 if result['attack_metric'].uas < raw_metric.uas - 0.00001:
+                    succ = True
                     log('Succeed in step {}'.format(iter_id))
                     break
             elif result['code'] == 404:
@@ -442,6 +455,7 @@ class HackSubtree(IHack):
 
         return defaultdict(
             lambda: -1, {
+                "succ": 1 if succ else 0,
                 "raw_metric": raw_metric,
                 "attack_metric": best_attack_metric,
                 "iters": iter_id,
@@ -479,67 +493,101 @@ class HackSubtree(IHack):
             return
         return ret
 
-    def black_hack(self, instance, sentence, tgt_span, src_span):
+    def random_hack(self, instance, sentence, tgt_span_lst, src_span):
         t0 = time.time()
         words, tags, chars, arcs, rels = instance
         sent_len = words.size(1)
 
         raw_words_lst = cast_list(words)
-        idxs = gen_idxs_to_substitute(src_span[0], src_span[1] + 1, int(self.config.hks_max_change),
-                                      self.config.hks_cand_num)
+        idxs = gen_idxs_to_substitute(list(range(src_span[0], src_span[1] + 1)),
+                                      int(self.config.hks_max_change), self.config.hks_cand_num)
         if self.config.hks_blk_repl_tag == 'any':
             cand_words_lst = subsitute_by_idxs(raw_words_lst, idxs, self.blackbox_sub_idxs)
-        elif re.match("[njvri]*", self.config.hks_blk_repl_tag):
+        elif re.match("[njvri]+", self.config.hks_blk_repl_tag):
             cand_words_lst = subsitute_by_idxs(raw_words_lst, idxs,
-                                               self.tagged_sub_idxs(self.config.hks_blk_repl_tag))
+                                               self.njvri_subidxs(self.config.hks_blk_repl_tag))
+        elif re.match("keep", self.config.hks_blk_repl_tag):
+            tag_texts = cast_list(tags[0])
+            vocab_idxs_lst = []
+            for i in range(src_span[0], src_span[1] + 1):
+                vocab_idxs_lst.append(self.univ_subidxs(HACK_TAGS.ptb2uni(self.vocab.tags[tag_texts[i]])))
+            cand_words_lst = subsitute_by_idxs_2(raw_words_lst, idxs, src_span[0], vocab_idxs_lst)
         else:
             raise Exception
 
         # First index is raw words
-        cand_words = torch.tensor([raw_words_lst] + cand_words_lst, device=words.device)
+        all_words = torch.tensor([raw_words_lst] + cand_words_lst, device=words.device)
+        raw_words = all_words[0:1]
+        cand_words = all_words[1:]
+
+        tgt_idxs = []
+        for tgt_span in tgt_span_lst:
+            tgt_idxs.extend([i for i in range(tgt_span[0], tgt_span[1] + 1) if i != tgt_span[2]])
+        ex_tgt_idxs = [i for i in range(sent_len) if i not in tgt_idxs]
 
         pred_arcs, pred_rels, gold_arcs, gold_rels = self.task.partial_evaluate(
-            (cand_words, tags.expand_as(cand_words), None, arcs.expand_as(cand_words),
-             rels.expand_as(cand_words)),
-            mask_idxs=ex_span_idx(tgt_span, sent_len),
-            mst=self.config.hks_mst == 'on',
+            (all_words, tags.expand_as(all_words), None, arcs.expand_as(all_words),
+             rels.expand_as(all_words)),
+            mask_idxs=ex_tgt_idxs,
+            mst=False,
             return_metric=False)
 
-        raw_metric = ParserMetric()
-        raw_metric(pred_arcs[0], pred_rels[0], gold_arcs[0], gold_rels[0])
+        # raw_metric = ParserMetric()
+        # raw_metric(pred_arcs[0], pred_rels[0], gold_arcs[0], gold_rels[0])
+        raw_metric = self.task.partial_evaluate((raw_words, tags, None, arcs, rels),
+                                                ex_tgt_idxs,
+                                                mst=True)
+
+        succ = False
         arc_delta = (pred_arcs[1:] - pred_arcs[0]).abs().sum(1)
         if arc_delta.sum() == 0:
-            att_metric = raw_metric
-            att_id = self.config.hks_cand_num  # direct to the last attacked sentence
+            # direct forward to the last attacked sentence
+            att_id = self.config.hks_cand_num - 1
         else:
-            # dt_vals, dt_idxs = arc_delta.topk(k=self.config.hks_cand_num)
-            for att_id in range(1, self.config.hks_cand_num + 1):
-                att_metric = ParserMetric()
-                att_metric(pred_arcs[att_id], pred_rels[att_id], gold_arcs[att_id],
-                           gold_rels[att_id])
-                if att_metric.uas < raw_metric.uas - 0.0001:
-                    break
+            for att_id in range(0, self.config.hks_cand_num):
+                if arc_delta[att_id] != 0:
+                    att_metric = self.task.partial_evaluate(
+                        (cand_words[att_id:att_id + 1], tags, None, arcs, rels),
+                        ex_tgt_idxs,
+                        mst=True)
+
+                    if att_metric.uas < raw_metric.uas - 0.0001:
+                        succ = True
+                        break
 
         # ATT_ID will be equal to att_id when failing
         t1 = time.time()
 
-        _, raw_arcs, raw_rels = self.task.predict([(cand_words[0:1], tags, None)],
-                                                  mst=self.config.hks_mst == 'on')
+        _, raw_arcs, raw_rels = self.task.predict([(raw_words, tags, None)], mst=True)
         _, att_arcs, att_rels = self.task.predict([(cand_words[att_id:att_id + 1], tags, None)],
-                                                  mst=self.config.hks_mst == 'on')
+                                                  mst=True)
 
-        if att_metric.uas >= raw_metric.uas - .00001:
+        if not succ:
             info = 'Nothing'
         else:
+            for tgt_span in tgt_span_lst:
+                if tgt_span == src_span:
+                    continue
+                raw_span_corr = 0
+                att_span_corr = 0
+                for i in range(tgt_span[0], tgt_span[1] + 1):
+                    if i == tgt_span[2]:
+                        continue
+                    if raw_arcs[0][i - 1] == arcs[0][i - 1]:
+                        raw_span_corr += 1
+                    if att_arcs[0][i - 1] == arcs[0][i - 1]:
+                        att_span_corr += 1
+                if att_span_corr < raw_span_corr:
+                    break
+
             info = tabulate(self._gen_log_table(words, cand_words[att_id:att_id + 1], tags, arcs,
                                                 rels, raw_arcs, att_arcs, src_span, tgt_span),
                             floatfmt='.6f')
 
         return defaultdict(
             lambda: -1, {
-                "raw_metric": raw_metric,
-                "attack_metric": att_metric,
-                "att_id": att_id if att_id < self.config.hks_cand_num else np.nan,
+                "succ": 1 if succ else 0,
+                "att_id": att_id if att_id < self.config.hks_cand_num - 1 else np.nan,
                 "num_changed": self.config.hks_max_change,
                 "time": t1 - t0,
                 "logtable": info
@@ -554,38 +602,56 @@ class HackSubtree(IHack):
 
         words_text = self.vocab.id2word(words[0])
 
-        pairs = self.select_span_pair(instance, sentence)
-
-        if pairs is None:
-            return None
-
         succ = False
 
-        for pair_id, (tgt_span, src_span) in enumerate(pairs[:self.config.hks_topk_pair]):
-            log('[Chosen span] ', 'tgt-', tgt_span,
-                ' '.join(words_text[tgt_span[0]:tgt_span[1] + 1]), 'src-', src_span,
-                ' '.join(words_text[src_span[0]:src_span[1] + 1]))
+        if self.config.hks_color == "black":
+            spans = filter_spans(gen_spans(sentence), self.config.hks_min_span_len,
+                                 self.config.hks_max_span_len, True)
+            hack_result = None
+            for pair_id, src_span in enumerate(spans):
+                log('[Chosen source] ', src_span, ' '.join(words_text[src_span[0]:src_span[1] + 1]))
+                tgt_span_lst = [
+                    ele for ele in spans if check_gap(ele, src_span, self.config.hks_span_gap)
+                ]
+                if len(tgt_span_lst) == 0:
+                    continue
+                hack_result = self.random_hack(instance, sentence, tgt_span_lst, src_span)
+                if hack_result['succ'] == 1:
+                    succ = True
+                    log("Succ on source span {}.\n".format(src_span))
+                    break
+                log("Fail on source span {}.\n".format(src_span))
+            if hack_result is None:
+                log("Not enough span pairs")
+                return None
+        elif self.config.hks_color in ['white', 'grey']:
+            pairs = self.select_span_pair(instance, sentence)
+            if pairs is None:
+                return None
+            for pair_id, (tgt_span, src_span) in enumerate(pairs[:self.config.hks_topk_pair]):
+                log('[Chosen span] ', 'tgt-', tgt_span,
+                    ' '.join(words_text[tgt_span[0]:tgt_span[1] + 1]), 'src-', src_span,
+                    ' '.join(words_text[src_span[0]:src_span[1] + 1]))
 
-            if self.config.hks_color == "white":
-                hack_result = self.white_hack(instance, sentence, tgt_span, src_span)
-            elif self.config.hks_color == "black":
-                hack_result = self.black_hack(instance, sentence, tgt_span, src_span)
-            else:
-                raise Exception
-            if hack_result['attack_metric'].uas < hack_result['raw_metric'].uas:
-                succ = True
-                log("Succ on the span pair {}/{}.\n".format(pair_id, len(pairs)))
-                break
-            log("Fail on the span pair {}/{}.\n".format(pair_id, len(pairs)))
+                if self.config.hks_color == "white":
+                    hack_result = self.white_hack(instance, sentence, tgt_span, src_span)
+                elif self.config.hks_color == "grey":
+                    hack_result = self.random_hack(instance, sentence, [tgt_span], src_span)
+                else:
+                    raise Exception
+                if hack_result['succ'] == 1:
+                    succ = True
+                    log("Succ on the span pair {}/{}.\n".format(pair_id, len(pairs)))
+                    break
+                log("Fail on the span pair {}/{}.\n".format(pair_id, len(pairs)))
+
+            hack_result['meta_trial_pair'] = pair_id + 1
+            hack_result['meta_total_pair'] = len(pairs)
+            hack_result['meta_succ_trial_pair'] = pair_id + 1 if succ else 0
+            hack_result['meta_succ_total_pair'] = len(pairs) if succ else 0
 
         t1 = time.time()
-        log('Sentence cost {:.1f}s, {} on pair {}/{}'.format(t1 - t0, 'succ' if succ else 'fail',
-                                                             pair_id, len(pairs)))
-        hack_result['meta_trial_pair'] = pair_id + 1
-        hack_result['meta_total_pair'] = len(pairs)
-        hack_result['meta_succ_trial_pair'] = pair_id + 1 if succ else 0
-        hack_result['meta_succ_total_pair'] = len(pairs) if succ else 0
-        # hack_result['meta_1st_succ_ratio'] = pair_id / len(pairs) if succ else 0.
+        log('Sentence cost {:.1f}s'.format(t1 - t0))
         hack_result['meta_time'] = t1 - t0
 
         return hack_result
@@ -608,8 +674,9 @@ class HackSubtree(IHack):
         embed_grad = self.backward_loss(instance=instance,
                                         mask_idxs=ex_span_idx(tgt_span, sent_len),
                                         verbose=True)
-
         grad_norm = embed_grad.norm(dim=2)
+        if self.config.hks_word_random == "on":
+            grad_norm = torch.rand(grad_norm.size(), device=grad_norm.device)
 
         position_mask = [False for _ in range(words.size(1))]
         # Mask some positions
@@ -648,11 +715,11 @@ class HackSubtree(IHack):
         word_sids = torch.tensor(selected_words)
 
         for word_sid in word_sids:
-            word_grad = embed_grad[0][word_sid]
             word_vid = words[0][word_sid]
             emb_to_rpl = self.parser.embed.weight[word_vid]
 
             if self.config.hks_step_size > 0:
+                word_grad = embed_grad[0][word_sid]
                 delta = word_grad / \
                     torch.norm(word_grad) * self.config.hks_step_size
                 changed = emb_to_rpl - delta
@@ -662,7 +729,7 @@ class HackSubtree(IHack):
                     must_tag = None
                 elif tag_type == 'same':
                     must_tag = self.vocab.tags[tags[0][word_sid].item()]
-                elif re.match("[njvri]*", tag_type):
+                elif re.match("[njvri]+", tag_type):
                     must_tag = HACK_TAGS[tag_type]
                 else:
                     raise Exception
@@ -679,7 +746,7 @@ class HackSubtree(IHack):
             else:
                 new_word_vid = random.randint(0, self.vocab.n_words)
                 while new_word_vid in [self.vocab.pad_index, self.vocab.word_dict["<root>"]]:
-                    new_word_vid = random.randint(0, self.vocab.n_words)
+                    new_word_vid = random.randint(0, self.vocab.n_words - 1)
                 new_word_vid = torch.tensor(new_word_vid, device=words.device)
                 repl_info = {}
                 change_positions__.add(word_sid.item())
@@ -705,11 +772,11 @@ class HackSubtree(IHack):
         att_tags, att_arcs, att_rels = self.task.predict([(new_words, tags, None)],
                                                          mst=self.config.hks_mst == 'on')
 
-        if verbose:
-            print('$$$$$$$$$$$$$$$$$$$$$$$$$$$')
-            print('Iter {}'.format(iter_id))
-            print(tabulate(_gen_log_table(), floatfmt=('.6f')))
-            print('^^^^^^^^^^^^^^^^^^^^^^^^^^^')
+        # if verbose:
+        #     print('$$$$$$$$$$$$$$$$$$$$$$$$$$$')
+        #     print('Iter {}'.format(iter_id))
+        #     print(tabulate(_gen_log_table(), floatfmt=('.6f')))
+        #     print('^^^^^^^^^^^^^^^^^^^^^^^^^^^')
 
         rpl_detail = ""
         for i in range(len(word_sids)):

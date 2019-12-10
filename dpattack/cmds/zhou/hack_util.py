@@ -1,10 +1,9 @@
 import numpy as np
+from collections import defaultdict
+from functools import lru_cache
 
 
-def young_select(ordered_idxs=[5, 2, 1, 3, 0, 4],
-                 num_to_select=3,
-                 selected={2, 3, 4},
-                 max_num=4):
+def young_select(ordered_idxs=[5, 2, 1, 3, 0, 4], num_to_select=3, selected={2, 3, 4}, max_num=4):
     """
     selected = set()
     new_select, exc = young_select([5, 2, 1, 3, 0, 4], selected=selected)
@@ -28,10 +27,7 @@ def young_select(ordered_idxs=[5, 2, 1, 3, 0, 4],
     return new_select, sorted_ex_cands[max_num - num_to_select:]
 
 
-def elder_select(ordered_idxs=[5, 2, 1, 3, 0, 4],
-                 num_to_select=3,
-                 selected={2, 3, 4},
-                 max_num=5):
+def elder_select(ordered_idxs=[5, 2, 1, 3, 0, 4], num_to_select=3, selected={2, 3, 4}, max_num=5):
     """
     selected = set()
     new_select = elder_select([5, 2, 1, 3, 0, 4], selected=selected)
@@ -60,6 +56,64 @@ def elder_select(ordered_idxs=[5, 2, 1, 3, 0, 4],
 
 
 class _Tags:
+
+    _UNI_TAG = defaultdict(lambda: 'X', {
+        "!": ".",
+        "#": ".",
+        "$": ".",
+        "''": ".",
+        "(": ".",
+        ")": ".",
+        ",": ".",
+        "-LRB-": ".",
+        "-RRB-": ".",
+        ".": ".",
+        ":": ".",
+        "?": ".",
+        "CC": "CONJ",
+        "CD": "NUM",
+        "DT": "DET",
+        "EX": "DET",
+        "FW": "X",
+        "IN": "ADP",
+        "JJ": "ADJ",
+        "JJR": "ADJ",
+        "JJS": "ADJ",
+        "LS": "X",
+        "MD": "VERB",
+        "NN": "NOUN",
+        "NNP": "NOUN",
+        "NNPS": "NOUN",
+        "NNS": "NOUN",
+        "NP": "NOUN",
+        "PDT": "DET",
+        "POS": "PRT",
+        "PRP": "PRON",
+        "PRP$": "PRON",
+        "PRT": "PRT",
+        "RB": "ADV",
+        "RBR": "ADV",
+        "RBS": "ADV",
+        "RN": "X",
+        "RP": "PRT",
+        "SYM": "X",
+        "TO": "PRT",
+        "UH": "X",
+        "VB": "VERB",
+        "VBD": "VERB",
+        "VBG": "VERB",
+        "VBN": "VERB",
+        "VBP": "VERB",
+        "VBZ": "VERB",
+        "VP": "VERB",
+        "WDT": "DET",
+        "WH": "X",
+        "WP": "PRON",
+        "WP$": "PRON",
+        "WRB": "ADV",
+        "``": "."
+    })
+
     def __getitem__(self, k):
         assert k
         ret = []
@@ -73,19 +127,38 @@ class _Tags:
             ret += ['IN']
         if 'r' in k:
             ret += ['RB', 'RBR', 'RBS']
+        if 'x' in k:
+            ret += [
+                "#", "$", "''", ",", "-LRB-", "-RRB-", ".", ":", "CC", "CD", "DT", "EX", "FW", "LS",
+                "MD", "PDT", "POS", "PRP", "PRP$ ", "RP", "SYM", "TO", "UH", "WDT", "WP", "WP$",
+                "WRB", "``"
+            ]
         return tuple(ret)
 
-    def get_coarse(self, k):
+    def ptb2uni(self, k):
+        return self._UNI_TAG[k]
+        
+    @lru_cache(maxsize=None)
+    def uni2ptb(self, k):
+        ret = []
+        for ele in self._UNI_TAG:
+            if self._UNI_TAG[ele] == k:
+                ret.append(ele)
+        return tuple(ret)
+
+    def ptb2njvri(self, k):
         if k[:2] == 'NN':
-            return self['n']
+            return 'n'
         elif k[:2] == 'JJ':
-            return self['j']
+            return 'j'
         elif k[:2] == 'RB':
-            return self['r']
+            return 'r'
         elif k[:2] == 'VB':
-            return self['v']
+            return 'v'
         elif k[:2] == 'IN':
-            return self['i']
+            return 'i'
+        else:
+            return 'x'
 
 
 HACK_TAGS = _Tags()
@@ -108,11 +181,8 @@ v = V()
 # legal_words = list(range(30000))
 
 
-def gen_idxs_to_substitute(start, end, repl_num, cand_num):
-    return np.stack([
-        np.random.choice(list(range(start, end)), replace=False, size=repl_num)
-        for _ in range(cand_num)
-    ])
+def gen_idxs_to_substitute(idxs, repl_num, cand_num):
+    return np.stack([np.random.choice(idxs, replace=False, size=repl_num) for _ in range(cand_num)])
 
 
 def subsitute_by_idxs(words, idxs, vocab_idxs):
@@ -130,3 +200,19 @@ def subsitute_by_idxs(words, idxs, vocab_idxs):
         ret.append(tmp)
     return ret
 
+
+def subsitute_by_idxs_2(words, idxs, start_idx, vocab_idxs_lst):
+    ret = []
+    cand_num = len(idxs)
+    repl_num = len(idxs[0])
+    to_repl_lst = []
+
+    for vocab_idxs in vocab_idxs_lst:
+        to_repl_lst.append(np.random.choice(vocab_idxs, size=cand_num))
+
+    for i in range(cand_num):
+        tmp = words.copy()
+        for j in range(repl_num):
+            tmp[idxs[i][j]] = to_repl_lst[idxs[i][j] - start_idx][i]
+        ret.append(tmp)
+    return ret
