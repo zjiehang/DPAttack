@@ -1,6 +1,6 @@
 # DPAttack (TODO: Reconstruction code)
 
-Code for ACL 2020 Paper: Evaluating and Enhancing the Robustness of Neural Network-based Dependency Parsing Models with Adversarial Examples, [URL](https://acl2020.org/).
+Pytorch implementation for ACL 2020 Paper: "Evaluating and Enhancing the Robustness of Neural Network-based Dependency Parsing Models with Adversarial Examples", [URL](https://acl2020.org/).
 
 # Requirement:
 Python: 3.7
