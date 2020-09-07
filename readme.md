@@ -1,11 +1,31 @@
-# DPAttack (TODO: Reconstruction code)
+# DPAttack
+
+*TODO: Code refactoring*
 
 Pytorch implementation for ACL 2020 Paper: "Evaluating and Enhancing the Robustness of Neural Network-based Dependency Parsing Models with Adversarial Examples", [URL](https://acl2020.org/).
 
-# Requirement:
-Python: 3.7
+You may cite our paper by:
 
-PyTorch: 1.4.0
+```
+@inproceedings{zheng-etal-2020-evaluating,
+    title = "Evaluating and Enhancing the Robustness of Neural Network-based Dependency Parsing Models with Adversarial Examples",
+    author = "Zheng, Xiaoqing  and
+      Zeng, Jiehang  and
+      Zhou, Yi  and
+      Hsieh, Cho-Jui  and
+      Cheng, Minhao  and
+      Huang, Xuanjing",
+    booktitle = "Proceedings of the 58th Annual Meeting of the Association for Computational Linguistics",
+    year = "2020",
+    publisher = "Association for Computational Linguistics"
+}
+```
+
+# Requirements:
+
+`Python`: 3.7
+
+`PyTorch`: 1.4.0
 
 # Usage
 
@@ -14,7 +34,7 @@ PyTorch: 1.4.0
 $ python run.py -mode=train -conf=config.ini
 ```
 
-More details about the model can be adjusted in config.ini
+You can configure the model in `config.ini`
 
 ### Evaluate
 ```sh
@@ -22,23 +42,33 @@ $ python run.py -mode=evaluate -conf=config.ini
 ```
 
 ### Attack
+
+#### Blackbox
+
 ```sh
 $ python run.py -mode=attack_type -conf=config.ini
 ```
 
-where attack_type includes blackbox, whitebox, blackbox_phrase, whitebox_phrase
+where `attack_type` includes `blackbox`,  `blackbox_phrase`, `whitebox_phrase`
 
-blackbox: black-box on sentence-level attack
+`blackbox`: black-box on sentence-level attack
 
-whitebox: white-box on sentence-level attack
+`blackbox_phrase`: black-box on phrase-level attack
 
-blackbox_phrase: black-box on phrase-level attack
+`whitebox_phrase`: white-box on phrase-level attack
 
-whitebox_phrase: white-box on phrase-level attack
+#### Whitebox
+
+```sh
+$ python run_whitebox.py -mode=hackwhole|hackchar|hacksubtree
+```
+
+where `hackwhole` denotes attack a parser at word level, `hackchar` denotes attack a parser at char level, and `hacksubtree` denotes attack a subtree in a parser by modifying another one.
+
+The settings for attacking can be found in `run_whitebox.py`, some basic configuration for the parser can be found in `config.ini`. If there exists some conflictions, the config in `*.py` will override that in `*.ini`.
 
 
-
-# Result
+<!-- # Result
 
 Results of Black-box attack and White-box attack on 10% (maximum percentage of words that are allowed to be modified) are listed belowed:
 
@@ -55,7 +85,7 @@ Results of Black-box attack and White-box attack on 10% (maximum percentage of w
 |  | white-box  |  |  |  |  | 
 
 
-More details can be seen in paper.
+More details can be seen in paper. -->
 
 # Acknowledgement
 
@@ -63,5 +93,4 @@ The implementation is based on [yzhangcs](https://github.com/yzhangcs)'s code in
 
 The nlpaug library is based on [makcedward](https://github.com/makcedward)'s libary in [nlpaug](https://github.com/makcedward/nlpaug), a python library for data augmentation in NLP. Thanks for their awesome library.
 
-# Cite:
  
